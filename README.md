@@ -55,6 +55,20 @@ scripts/uninstall-helper.sh /Applications/DFUUtility.app
 
 ## Build and inspect the host
 
+The standard safe pre-release command is:
+
+```sh
+cd ~/Library/Codex/DFUUtility
+scripts/release-check.sh
+```
+
+It builds, tests, runs only read-only CLI commands, packages and verifies the app, validates metadata/licensing/ZIP structure, and prints the artifact SHA-256. It never enters DFU, revives, restores, downloads an IPSW, changes helper registration, or requests authorization. Use `--strict` to make a dirty tree fatal. Production validation requires an explicit identity and an already notarized/stapled result:
+
+```sh
+DFUUTILITY_SIGNING_IDENTITY="Developer ID Application: Example Name (TEAMID)" \
+  scripts/release-check.sh --production
+```
+
 ```sh
 cd ~/Library/Codex/DFUUtility
 swift build

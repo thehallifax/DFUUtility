@@ -271,3 +271,30 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     process.standardOutput = Pipe(); process.standardError = Pipe(); try process.run(); process.waitUntilExit()
     #expect(process.terminationStatus == 64)
 }
+
+private func releaseLibrary(_ command: String) throws -> (Int32, String) {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let library = root.appendingPathComponent("scripts/release-check-lib.sh").path
+    let process = Process(), output = Pipe(); process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = ["-c", ". \"$1\"; \(command)", "release-test", library]; process.standardOutput = output; process.standardError = output
+    try process.run(); let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit(); return (process.terminationStatus, String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
+@Test func releaseCheckParsesVersionAndRejectsMalformedMetadata() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.4.0")
+    let malformed = try temporaryDirectory().appendingPathComponent("Version.env"); try Data("MARKETING_VERSION=bad!\n".utf8).write(to: malformed)
+    #expect(try releaseLibrary("validate_version_metadata \"\(malformed.path)\"").0 != 0)
+    #expect(try releaseLibrary("metadata_value /definitely/missing MARKETING_VERSION").0 != 0)
+}
+
+@Test func releaseCheckArtifactIdentitySignatureAndResults() throws {
+    #expect(try releaseLibrary("distribution_artifact_name 9.8.7").1 == "DFUUtility-9.8.7.zip")
+    #expect(try releaseLibrary("classify_identities '1) HASH \"Developer ID Application: Example (TEAM)\"'").1 == "configured")
+    #expect(try releaseLibrary("classify_identities '1) HASH \"Apple Development: Example\"'").1 == "not-configured")
+    #expect(try releaseLibrary("classify_signature 'Authority=Developer ID Application: Example'").1 == "developer-id")
+    #expect(try releaseLibrary("classify_signature 'Signature=adhoc'").1 == "ad-hoc")
+    #expect(try releaseLibrary("release_result 0 2 development").1 == "DEVELOPMENT_RC_READY_WITH_WARNINGS")
+    #expect(try releaseLibrary("release_result 1 0 strict").1 == "FAIL")
+    #expect(try releaseLibrary("dirty_tree_outcome development").1 == "WARN")
+    #expect(try releaseLibrary("dirty_tree_outcome strict").1 == "FAIL")
+}

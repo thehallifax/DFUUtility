@@ -25,6 +25,20 @@ The app is not sandboxed because Authorization Services privilege elevation is o
 
 ## Commands
 
+Begin every release candidate with the non-destructive aggregate check:
+
+```sh
+scripts/release-check.sh
+```
+
+`--strict` makes a dirty Git tree fail. `--production` additionally requires a Developer ID Application identity supplied through `DFUUTILITY_SIGNING_IDENTITY`, Developer ID signatures, hardened runtime, Team-ID consistency, and a locally verifiable notarization staple. It never submits to Apple:
+
+```sh
+scripts/release-check.sh --strict
+DFUUTILITY_SIGNING_IDENTITY="Developer ID Application: Example Name (TEAMID)" \
+  scripts/release-check.sh --production
+```
+
 Development/ad-hoc package:
 
 ```sh
