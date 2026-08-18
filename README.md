@@ -1,14 +1,53 @@
 # DFUUtility
 
-Technical-spike CLI for automating Apple Silicon Mac DFU transition and restore on macOS 14+.
+Native Swift technical-spike CLI for Apple Silicon Mac DFU transition, Apple IPSW discovery/download, and restore on macOS 14+.
+
+## Build and inspect the host
 
 ```sh
+cd ~/Library/Codex/DFUUtility
+swift build
+swift test
 swift build -c release
+.build/release/dfuctl doctor
 .build/release/dfuctl status
+```
+
+`doctor` checks architecture, macOS, Apple Configurator, `cfgutil`, `macvdmtool`, restore support, cache writability, and target discovery. No attached target is a normal non-fatal result. Install [macvdmtool](https://github.com/AsahiLinux/macvdmtool) separately; the project neither vendors nor silently installs it. `DFUCTL_CFGUTIL_PATH` and `DFUCTL_MACVDMTOOL_PATH` override tool discovery.
+
+## IPSW commands
+
+```sh
+.build/release/dfuctl ipsw list
+.build/release/dfuctl ipsw list --verbose
+.build/release/dfuctl ipsw latest
+.build/release/dfuctl ipsw cache
+.build/release/dfuctl ipsw download latest
+.build/release/dfuctl ipsw download --build 25G83
+.build/release/dfuctl ipsw clean --partials
+.build/release/dfuctl ipsw clean --invalid
+```
+
+Discovery reads Apple's macOS IPSW MobileAsset catalogue directly; no third-party firmware database is involved. Without a target, `latest` is the numerically newest universal Apple Silicon restore image in that catalogue. Downloads stream to a `.partial` file, show progress, resume with an HTTP byte range when the Apple CDN accepts it, validate size, ZIP manifests, and Apple's catalogue SHA-1, then atomically enter the cache.
+
+Completed images and metadata live in `~/Library/Caches/DFUUtility/IPSW/<build>/`; partials live under `downloads/` and are never reported as complete. A valid cache hit is reused. Cleanup requires an explicit `--partials` and/or `--invalid`; it never removes valid images.
+
+## Device operations
+
+```sh
 sudo .build/release/dfuctl dfu
+.build/release/dfuctl revive
 .build/release/dfuctl restore /path/to/UniversalMac_Restore.ipsw
 ```
 
-`restore` is destructive and runs only when explicitly invoked. Install Apple Configurator for its `cfgutil` restore engine and install [macvdmtool](https://github.com/AsahiLinux/macvdmtool) separately for programmatic DFU entry. Override discovery locations with `DFUCTL_CFGUTIL_PATH` and `DFUCTL_MACVDMTOOL_PATH`.
+`restore` is destructive and runs only when explicitly invoked. Apple Configurator's `cfgutil` is the restore engine; this project does not implement Apple's low-level protocol.
 
-See [restore engine research](docs/RESTORE_ENGINE_RESEARCH.md) and [IPSW discovery](docs/IPSW_DISCOVERY.md).
+## Current limitations
+
+- Physical DFU transition, revive, and restore remain untested pending access to a second Apple Silicon Mac.
+- The Apple MobileAsset catalogue is an operational interface and not a versioned public SDK; parsing is fixture-tested and intentionally isolated.
+- Catalogue presence means “currently offered,” not authoritative proof that personalization/signing will succeed for every device. `cfgutil` makes that final determination.
+- Ctrl-C leaves a clearly marked partial. Resume requires a matching HTTP 206 `Content-Range`; otherwise a full fresh download is used.
+- The cache rechecks size and restore manifests when listing/reusing; the authoritative SHA-1 is calculated at download completion because hashing a roughly 20 GB image on every listing would be unnecessarily expensive.
+
+See [restore engine research](docs/RESTORE_ENGINE_RESEARCH.md) and [IPSW discovery details](docs/IPSW_DISCOVERY.md).
