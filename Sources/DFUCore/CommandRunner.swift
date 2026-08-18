@@ -14,6 +14,7 @@ public protocol CommandRunning: Sendable {
     func run(_ executable: URL, arguments: [String]) throws -> CommandResult
     func runStreaming(_ executable: URL, arguments: [String]) throws -> CommandResult
     func runInteractive(_ executable: URL, arguments: [String]) throws -> CommandResult
+    func runStreaming(_ executable: URL, arguments: [String], onOutput: @escaping @Sendable (Data) -> Void) throws -> CommandResult
 }
 
 public extension CommandRunning {
@@ -26,6 +27,13 @@ public extension CommandRunning {
 
     func runInteractive(_ executable: URL, arguments: [String]) throws -> CommandResult {
         try runStreaming(executable, arguments: arguments)
+    }
+
+    func runStreaming(_ executable: URL, arguments: [String], onOutput: @escaping @Sendable (Data) -> Void) throws -> CommandResult {
+        let result = try run(executable, arguments: arguments)
+        if !result.stdout.isEmpty { onOutput(result.stdout) }
+        if !result.stderr.isEmpty { onOutput(result.stderr) }
+        return result
     }
 }
 
@@ -56,6 +64,25 @@ public struct ProcessRunner: CommandRunning {
         try process.run()
         process.waitUntilExit()
         return CommandResult(status: process.terminationStatus, stdout: Data(), stderr: Data())
+    }
+
+    public func runStreaming(_ executable: URL, arguments: [String], onOutput: @escaping @Sendable (Data) -> Void) throws -> CommandResult {
+        let process = Process(), pipe = Pipe()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        var captured = Data()
+        while true {
+            let data = pipe.fileHandleForReading.availableData
+            guard !data.isEmpty else { break }
+            captured.append(data)
+            FileHandle.standardOutput.write(data)
+            onOutput(data)
+        }
+        process.waitUntilExit()
+        return CommandResult(status: process.terminationStatus, stdout: captured, stderr: Data())
     }
 
     public func runInteractive(_ executable: URL, arguments: [String]) throws -> CommandResult {

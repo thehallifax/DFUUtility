@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DiagnosticsView: View {
     let report: DoctorReport?
+    var helperState: PrivilegedHelperState = PrivilegedDFUClient().state()
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Diagnostics").font(.title.bold())
@@ -12,6 +13,7 @@ struct DiagnosticsView: View {
                 diagnostic("Apple Configurator", report.configuratorPresent)
                 diagnostic("cfgutil", report.status.host.cfgutilPath != nil, detail: report.status.host.cfgutilPath?.path)
                 diagnostic("macvdmtool — \(report.status.host.macVDMToolSource?.category ?? "Unavailable")", report.status.host.macVDMToolPath != nil, detail: report.status.host.macVDMToolPath?.path)
+                diagnostic("Privileged DFU Helper", helperState == .registered || helperState == .available || helperState == .installed, detail: String(describing: helperState))
                 diagnostic("Restore support", report.restoreSupported)
                 diagnostic("Cache writable", report.cacheWritable, detail: report.cacheDirectory.path)
                 Divider()

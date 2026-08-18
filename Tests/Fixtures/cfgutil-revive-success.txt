@@ -1,0 +1,28 @@
+Step = "Waiting for the device";
+Type = Step;
+
+Step = "Downloading System";
+Type = Step;
+
+Progress = "0.25";
+Step = "Downloading System";
+Type = Progress;
+
+Step = "Unzipping System";
+Type = Step;
+
+Progress = "0.50";
+Step = "Unzipping System";
+Type = Progress;
+
+Step = "Installing System";
+Type = Step;
+
+Progress = "1.0";
+Step = "Installing System";
+Type = Progress;
+
+Step = "Installing System";
+Type = StepComplete;
+
+Operation "revive" succeeded on 1 devices.

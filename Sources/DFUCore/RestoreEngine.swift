@@ -1,8 +1,101 @@
 import Foundation
 
-public enum RestoreAction: Sendable { case restore(URL), revive, reboot }
+public enum RestoreAction: Sendable, Equatable {
+    case restore(URL), revive, reboot
 
-public enum RestoreEvent: Sendable { case preparing, waitingForDevice, started, progress(Double?), message(String), completed }
+    public var operationName: String {
+        switch self { case .restore: "Restore"; case .revive: "Revive"; case .reboot: "Restart" }
+    }
+}
+
+public enum RestoreEvent: Sendable, Equatable {
+    case preparing
+    case waitingForDevice
+    case stageStarted(name: String, index: Int?, total: Int?)
+    case progress(stage: String, fraction: Double)
+    case stageCompleted(name: String)
+    case message(String)
+    case reconnecting
+    case completed
+    case failed(String)
+}
+
+/// Parses cfgutil's newline-delimited plist-like progress dictionaries. Progress is
+/// stage-local: a new Step resets the active stage, and the cfgutil `-1` sentinel
+/// is ignored rather than rendered as a negative percentage.
+public struct CFGUtilEventParser: Sendable {
+    private var buffer = ""
+    private var currentStage: String?
+
+    public init() {}
+
+    public mutating func consume(_ data: Data, final: Bool = false) -> [RestoreEvent] {
+        buffer += String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n")
+        var events: [RestoreEvent] = []
+        while let range = buffer.range(of: "\n\n") {
+            let block = String(buffer[..<range.lowerBound])
+            buffer.removeSubrange(..<range.upperBound)
+            events += parse(block)
+        }
+        if final, !buffer.isEmpty { events += parse(buffer); buffer = "" }
+        return events
+    }
+
+    private mutating func parse(_ block: String) -> [RestoreEvent] {
+        let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let type = value(named: "Type", in: trimmed)
+        let step = value(named: "Step", in: trimmed)
+        switch type {
+        case "Step":
+            guard let step else { return [.message(trimmed)] }
+            currentStage = step
+            if step.localizedCaseInsensitiveContains("Waiting for the device") { return [.waitingForDevice] }
+            let parts = Self.stageNumbers(in: step)
+            return [.stageStarted(name: Self.cleanStageName(step), index: parts?.0, total: parts?.1)]
+        case "Progress":
+            guard let raw = value(named: "Progress", in: trimmed), let numeric = Double(raw), numeric >= 0 else { return [] }
+            let stage = step.map(Self.cleanStageName) ?? currentStage.map(Self.cleanStageName) ?? "Working"
+            return [.progress(stage: stage, fraction: min(max(numeric, 0), 1))]
+        case "StepComplete":
+            let stage = step ?? currentStage
+            return stage.map { [.stageCompleted(name: Self.cleanStageName($0))] } ?? []
+        default:
+            if trimmed.contains("Operation \"") && trimmed.contains("succeeded") { return [] }
+            return [.message(trimmed)]
+        }
+    }
+
+    private func value(named key: String, in block: String) -> String? {
+        for line in block.split(separator: "\n") {
+            let text = line.trimmingCharacters(in: .whitespaces)
+            guard text.hasPrefix("\(key) =") else { continue }
+            var value = text.dropFirst(key.count + 2).trimmingCharacters(in: .whitespaces)
+            if value.hasSuffix(";") { value.removeLast() }
+            return value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        }
+        return nil
+    }
+
+    private static func stageNumbers(in stage: String) -> (Int, Int)? {
+        let pattern = #"Step\s+(\d+)\s+of\s+(\d+):"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: stage, range: NSRange(stage.startIndex..., in: stage)),
+              let first = Range(match.range(at: 1), in: stage), let second = Range(match.range(at: 2), in: stage),
+              let index = Int(stage[first]), let total = Int(stage[second]) else { return nil }
+        return (index, total)
+    }
+
+    private static func cleanStageName(_ stage: String) -> String {
+        stage.replacingOccurrences(of: #"^Step\s+\d+\s+of\s+\d+:\s*"#, with: "", options: .regularExpression)
+    }
+}
+
+private final class ParserBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var parser = CFGUtilEventParser()
+    func consume(_ data: Data, final: Bool = false) -> [RestoreEvent] { lock.withLock { parser.consume(data, final: final) } }
+}
 
 public struct RestoreEngine: Sendable {
     private let discovery: any DeviceDiscovering
@@ -10,55 +103,42 @@ public struct RestoreEngine: Sendable {
     private let cfgutil: URL?
 
     public init(discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), runner: any CommandRunning = ProcessRunner(), cfgutil: URL? = ToolLocator.executable(named: "cfgutil")) {
-        self.discovery = discovery
-        self.runner = runner
-        self.cfgutil = cfgutil
+        self.discovery = discovery; self.runner = runner; self.cfgutil = cfgutil
     }
 
     public func validateIPSW(_ url: URL) throws {
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            throw DFUError.invalidIPSW("file does not exist")
-        }
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { throw DFUError.invalidIPSW("file does not exist") }
         guard url.pathExtension.lowercased() == "ipsw" else { throw DFUError.invalidIPSW("expected a .ipsw file") }
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard (attributes[.size] as? NSNumber)?.int64Value ?? 0 > 1_000_000 else {
-            throw DFUError.invalidIPSW("file is implausibly small")
-        }
+        guard (attributes[.size] as? NSNumber)?.int64Value ?? 0 > 1_000_000 else { throw DFUError.invalidIPSW("file is implausibly small") }
         let listing = try runner.run(URL(fileURLWithPath: "/usr/bin/unzip"), arguments: ["-Z1", url.path])
         guard listing.status == 0 else { throw DFUError.invalidIPSW("ZIP directory is unreadable: \(listing.stderrString)") }
-        let entries = listing.stdoutString
-        guard entries.contains("BuildManifest.plist"), entries.contains("Restore.plist") else {
-            throw DFUError.invalidIPSW("missing BuildManifest.plist or Restore.plist")
-        }
+        guard listing.stdoutString.contains("BuildManifest.plist"), listing.stdoutString.contains("Restore.plist") else { throw DFUError.invalidIPSW("missing BuildManifest.plist or Restore.plist") }
     }
 
-    public func perform(_ action: RestoreAction) throws {
+    public func command(for action: RestoreAction) throws -> (URL, [String], DFUDevice) {
         guard let cfgutil else { throw DFUError.toolUnavailable("cfgutil (install Apple Configurator Automation Tools)") }
         if case .restore(let url) = action { try validateIPSW(url) }
         let devices = try discovery.devices()
         guard !devices.isEmpty else { throw DFUError.noTarget }
         guard devices.count == 1 else { throw DFUError.multipleTargets(devices.count) }
-        let stateAllowed: Bool
+        let target = devices[0]
         switch action {
-        case .restore: stateAllowed = devices[0].state == .dfu
-        case .revive: stateAllowed = devices[0].state == .dfu || devices[0].state == .recovery
-        case .reboot: stateAllowed = true
+        case .restore where target.state != .dfu: throw DFUError.targetNotInDFU
+        case .revive where target.state != .dfu && target.state != .recovery: throw DFUError.targetNotInDFU
+        default: break
         }
-        guard stateAllowed else { throw DFUError.targetNotInDFU }
-
         var arguments = ["--progress", "--verbose", "--timeout", "30"]
-        if let ecid = devices[0].ecid, !ecid.isEmpty { arguments += ["--ecid", ecid] }
-        switch action {
-        case .restore(let url):
-            arguments += ["restore", "--ipsw", url.path]
-        case .revive: arguments += ["revive"]
-        case .reboot: arguments += ["restart"]
-        }
-        let result = try runner.runStreaming(cfgutil, arguments: arguments)
-        guard result.status == 0 else {
-            throw DFUError.commandFailed(command: "cfgutil \(arguments.joined(separator: " "))", status: result.status, output: result.combinedOutput)
-        }
+        if let ecid = target.ecid, !ecid.isEmpty { arguments += ["--ecid", ecid] }
+        switch action { case .restore(let url): arguments += ["restore", "--ipsw", url.path]; case .revive: arguments += ["revive"]; case .reboot: arguments += ["restart"] }
+        return (cfgutil, arguments, target)
+    }
+
+    public func perform(_ action: RestoreAction) throws {
+        let (tool, arguments, _) = try command(for: action)
+        let result = try runner.runStreaming(tool, arguments: arguments)
+        guard result.status == 0 else { throw DFUError.commandFailed(command: "cfgutil \(arguments.joined(separator: " "))", status: result.status, output: result.combinedOutput) }
     }
 
     public func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> {
@@ -66,9 +146,17 @@ public struct RestoreEngine: Sendable {
             let task = Task.detached {
                 continuation.yield(.preparing)
                 do {
-                    try Task.checkCancellation(); continuation.yield(.waitingForDevice)
-                    try Task.checkCancellation(); continuation.yield(.started)
-                    try perform(action); continuation.yield(.completed); continuation.finish()
+                    let (tool, arguments, _) = try command(for: action)
+                    let parser = ParserBox()
+                    let result = try runner.runStreaming(tool, arguments: arguments) { data in
+                        for event in parser.consume(data) { continuation.yield(event) }
+                    }
+                    for event in parser.consume(Data(), final: true) { continuation.yield(event) }
+                    guard result.status == 0 else {
+                        let error = DFUError.commandFailed(command: "cfgutil \(arguments.joined(separator: " "))", status: result.status, output: result.combinedOutput)
+                        continuation.yield(.failed(error.localizedDescription)); throw error
+                    }
+                    continuation.yield(.completed); continuation.finish()
                 } catch { continuation.finish(throwing: error) }
             }
             continuation.onTermination = { _ in task.cancel() }
