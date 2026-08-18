@@ -94,3 +94,94 @@ private actor MockDownloader: IPSWDownloading {
 }
 
 @Test func existingErrorsRemainUseful() { #expect(DFUError.targetNotInDFU.localizedDescription.contains("not in DFU")); #expect(DFUError.multipleTargets(2).localizedDescription.contains("2")) }
+
+private func executableFile(in directory: URL, name: String = "macvdmtool", executable: Bool = true) throws -> URL {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent(name); try Data("tool".utf8).write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: executable ? 0o755 : 0o644], ofItemAtPath: url.path); return url
+}
+
+@Test func bundledHelperIsPreferred() throws {
+    let root = try temporaryDirectory(), resources = root.appendingPathComponent("Resources"), bin = root.appendingPathComponent("bin")
+    let bundled = try executableFile(in: resources), override = try executableFile(in: bin, name: "override")
+    let result = ToolLocator.macVDMTool(environment: ["DFUCTL_MACVDMTOOL_PATH": override.path], bundleURL: root.appendingPathComponent("DFUUtility.app"), bundleResourceURL: resources, executableURL: nil, externalCandidates: [])
+    #expect(result == ToolResolution(url: bundled, source: .bundled))
+}
+
+@Test func projectHelperIsDiscoveredBesideSwiftPMExecutable() throws {
+    let root = try temporaryDirectory(), helper = try executableFile(in: root), executable = root.appendingPathComponent("dfuctl")
+    let result = ToolLocator.macVDMTool(environment: [:], bundleURL: nil, bundleResourceURL: nil, executableURL: executable, externalCandidates: [])
+    #expect(result == ToolResolution(url: helper, source: .projectBuild))
+}
+
+@Test func developmentOverridePrecedesProjectHelper() throws {
+    let root = try temporaryDirectory(), project = root.appendingPathComponent("project"), custom = root.appendingPathComponent("custom")
+    _ = try executableFile(in: project); let override = try executableFile(in: custom)
+    let result = ToolLocator.macVDMTool(environment: ["DFUCTL_MACVDMTOOL_PATH": override.path], bundleURL: nil, bundleResourceURL: nil, executableURL: project.appendingPathComponent("dfuctl"), externalCandidates: [])
+    #expect(result == ToolResolution(url: override, source: .developmentOverride))
+}
+
+@Test func homebrewFallbackIsDiscovered() throws {
+    let root = try temporaryDirectory(), homebrew = try executableFile(in: root.appendingPathComponent("opt/homebrew/bin"))
+    #expect(ToolLocator.macVDMTool(environment: [:], bundleURL: nil, bundleResourceURL: nil, executableURL: nil, externalCandidates: [homebrew.path, "/missing"]) == ToolResolution(url: homebrew, source: .external(homebrew.deletingLastPathComponent().path)))
+}
+
+@Test func usrLocalFallbackIsDiscoveredAfterMissingHomebrew() throws {
+    let root = try temporaryDirectory(), local = try executableFile(in: root.appendingPathComponent("usr/local/bin"))
+    #expect(ToolLocator.macVDMTool(environment: [:], bundleURL: nil, bundleResourceURL: nil, executableURL: nil, externalCandidates: ["/missing", local.path])?.url == local)
+}
+
+@Test func unavailableAndNonExecutableHelpersAreRejected() throws {
+    let root = try temporaryDirectory(), invalid = try executableFile(in: root, executable: false)
+    #expect(ToolLocator.macVDMTool(environment: ["DFUCTL_MACVDMTOOL_PATH": invalid.path], bundleURL: nil, bundleResourceURL: nil, executableURL: nil, externalCandidates: []) == nil)
+}
+
+@Test func diagnosticsPreserveHelperSource() {
+    let host = HostStatus(isAppleSilicon: true, macOSVersion: "26", macVDMToolPath: URL(fileURLWithPath: "/tool"), cfgutilPath: nil, macVDMToolSource: .bundled)
+    #expect(host.macVDMToolSource?.category == "Bundled")
+}
+
+@Test func dfuCommandConstructionUsesSudoOnlyWhenNeeded() {
+    let tool = URL(fileURLWithPath: "/bundle/macvdmtool")
+    let root = DFUController.command(tool: tool, isRoot: true), user = DFUController.command(tool: tool, isRoot: false)
+    #expect(root.executable == tool); #expect(root.arguments == ["dfu"])
+    #expect(user.executable.path == "/usr/bin/sudo"); #expect(user.arguments == [tool.path, "dfu"])
+    #expect(!user.arguments.contains("-S")); #expect(!user.arguments.contains(where: { $0.localizedCaseInsensitiveContains("password") }))
+}
+
+private struct PrivilegeFailureRunner: CommandRunning {
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult { CommandResult(status: 1, stdout: Data(), stderr: Data("sudo: authentication failed\n".utf8)) }
+    func runInteractive(_ executable: URL, arguments: [String]) throws -> CommandResult { try run(executable, arguments: arguments) }
+}
+private struct NormalDiscovery: DeviceDiscovering { func devices() throws -> [DFUDevice] { [DFUDevice(state: .normal, ecid: "TEST")] } }
+
+@Test func privilegeFailureIsPropagatedClearly() {
+    let controller = DFUController(discovery: NormalDiscovery(), runner: PrivilegeFailureRunner(), tool: URL(fileURLWithPath: "/tool"))
+    #expect(throws: DFUError.privilegeRequired("sudo: authentication failed\n")) { try controller.enterDFU(timeout: 0) }
+}
+
+private final class InteractiveRunnerSpy: @unchecked Sendable, CommandRunning {
+    private let lock = NSLock(); private(set) var interactiveCalls = 0
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult { CommandResult(status: 0, stdout: Data(), stderr: Data()) }
+    func runInteractive(_ executable: URL, arguments: [String]) throws -> CommandResult { lock.withLock { interactiveCalls += 1 }; return CommandResult(status: 0, stdout: Data(), stderr: Data()) }
+}
+
+private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
+    private let lock = NSLock(); private var sequence: [[DFUDevice]]
+    init(_ sequence: [[DFUDevice]]) { self.sequence = sequence }
+    func devices() throws -> [DFUDevice] { lock.withLock { if sequence.count > 1 { return sequence.removeFirst() }; return sequence.first ?? [] } }
+}
+
+@Test func successfulHelperStillRequiresVerifiedSameTargetTransition() throws {
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC"), dfu = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xabc")
+    let discovery = SequencedDiscovery([[normal], [dfu]]), runner = InteractiveRunnerSpy()
+    try DFUController(discovery: discovery, runner: runner, tool: URL(fileURLWithPath: "/tool")).enterDFU(timeout: 1)
+    #expect(runner.interactiveCalls == 1)
+}
+
+@Test func helperExitZeroDoesNotHideFailedTransition() {
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let discovery = SequencedDiscovery([[normal], [normal]]), runner = InteractiveRunnerSpy()
+    #expect(throws: DFUError.transitionTimedOut) { try DFUController(discovery: discovery, runner: runner, tool: URL(fileURLWithPath: "/tool")).enterDFU(timeout: 0) }
+    #expect(runner.interactiveCalls == 1)
+}

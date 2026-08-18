@@ -15,7 +15,16 @@ struct DFUCLI {
             let report = try DoctorService().report(); printDoctor(report); if !report.isFundamentallyUsable { exit(1) }
         case "status": printStatus(try StatusService().status())
         case "ipsw": try await ipsw(Array(arguments.dropFirst()))
-        case "dfu": try DFUController().enterDFU(); print("Target verified in DFU mode.")
+        case "dfu":
+            let before = try StatusService().status()
+            print("Target before DFU:")
+            printTarget(before.targets)
+            if geteuid() != 0 { print("Administrator authorization required.") }
+            print("Entering DFU…")
+            try DFUController().enterDFU()
+            let after = try StatusService().status()
+            print("Target transitioned to DFU successfully.")
+            if let ecid = after.targets.first(where: { $0.state == .dfu })?.ecid { print("ECID: \(ecid)") }
         case "restore":
             guard arguments.count == 2 else { usage(exitCode: 64) }
             try RestoreEngine().perform(.restore(URL(fileURLWithPath: NSString(string: arguments[1]).expandingTildeInPath))); print("Restore completed successfully.")
@@ -80,10 +89,16 @@ struct DFUCLI {
         if status.targets.isEmpty { print("  State: Unknown") }
         for device in status.targets { print("  State: \(device.state.rawValue)"); if let model = device.model { print("  Model: \(model)") }; if let id = device.identifier { print("  Identifier: \(id)") }; if let ecid = device.ecid { print("  ECID: \(ecid)") } }
     }
+    static func printTarget(_ devices: [DFUDevice]) {
+        print("  Connected: \(devices.isEmpty ? "No" : "Yes")")
+        if devices.isEmpty { print("  State: Unknown"); return }
+        for device in devices { print("  State: \(device.state.rawValue)"); if let model = device.model { print("  Model: \(model)") }; if let ecid = device.ecid { print("  ECID: \(ecid)") } }
+    }
     static func printDoctor(_ r: DoctorReport) {
         func mark(_ value: Bool) -> String { value ? "✓" : "✗" }
-        print("DFUUtility Doctor\nHost\n\(mark(r.status.host.isAppleSilicon)) Apple Silicon\n✓ macOS \(ProcessInfo.processInfo.operatingSystemVersionString)\nDependencies\n\(mark(r.configuratorPresent)) Apple Configurator\n\(mark(r.status.host.cfgutilPath != nil)) cfgutil \(r.status.host.cfgutilPath?.path ?? "")\n\(mark(r.status.host.macVDMToolPath != nil)) macvdmtool \(r.status.host.macVDMToolPath?.path ?? "")\nRestore\n\(mark(r.restoreSupported)) cfgutil restore support available\nIPSW Cache\n\(mark(r.cacheWritable)) Writable\n  \(r.cacheDirectory.path)\nTarget\n\(r.status.targets.isEmpty ? "– No target connected" : "✓ \(r.status.targets.count) target(s) connected")\nOverall")
-        if r.setupComplete { print("✓ Host setup complete") } else if r.isFundamentallyUsable { print("⚠ Host setup incomplete: macvdmtool unavailable\n  Install macvdmtool from https://github.com/AsahiLinux/macvdmtool") } else { print("✗ Host configuration has blocking failures") }
+        let helper = "\(mark(r.status.host.macVDMToolPath != nil)) macvdmtool\n  Source: \(r.status.host.macVDMToolSource?.category ?? "Unavailable")\n  Path: \(r.status.host.macVDMToolPath?.path ?? "—")"
+        print("DFUUtility Doctor\nHost\n\(mark(r.status.host.isAppleSilicon)) Apple Silicon\n✓ macOS \(ProcessInfo.processInfo.operatingSystemVersionString)\nDependencies\n\(mark(r.configuratorPresent)) Apple Configurator\n\(mark(r.status.host.cfgutilPath != nil)) cfgutil \(r.status.host.cfgutilPath?.path ?? "")\n\(helper)\nRestore\n\(mark(r.restoreSupported)) cfgutil restore support available\nIPSW Cache\n\(mark(r.cacheWritable)) Writable\n  \(r.cacheDirectory.path)\nTarget\n\(r.status.targets.isEmpty ? "– No target connected" : "✓ \(r.status.targets.count) target(s) connected")\nOverall")
+        if r.setupComplete { print("✓ Host setup complete") } else if r.isFundamentallyUsable { print("⚠ Host setup incomplete: macvdmtool unavailable") } else { print("✗ Host configuration has blocking failures") }
     }
     static func formatBytes(_ value: Int64?) -> String { guard let value else { return "Unknown" }; return ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
     static func formatRate(_ value: Double) -> String { value > 0 ? "\(ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .file))/s" : "" }

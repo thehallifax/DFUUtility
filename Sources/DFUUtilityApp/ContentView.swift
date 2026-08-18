@@ -57,7 +57,8 @@ struct ContentView: View {
                     Button("Revive Mac") { model.revive() }.disabled(!model.canRevive)
                     Button("Refresh") { Task { await model.refreshDiagnosticsAndTarget() } }
                 }
-                if model.doctorReport?.status.host.macVDMToolPath == nil { Text("macvdmtool is unavailable. View Diagnostics for installation guidance.").font(.caption).foregroundStyle(.secondary) }
+                if model.doctorReport?.status.host.macVDMToolPath == nil { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
+                else if geteuid() != 0 { Text("GUI authorization requires the planned privileged service. Use dfuctl dfu from Terminal for now.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label("Target Mac", systemImage: "desktopcomputer") }
     }

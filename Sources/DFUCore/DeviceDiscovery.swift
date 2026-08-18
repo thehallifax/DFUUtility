@@ -104,11 +104,13 @@ public struct StatusService: Sendable {
         var arm64 = Int32(0)
         size = MemoryLayout<Int32>.size
         sysctlbyname("hw.optional.arm64", &arm64, &size, nil, 0)
+        let macVDMTool = ToolLocator.macVDMTool()
         return UtilityStatus(host: HostStatus(
             isAppleSilicon: arm64 == 1,
             macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
-            macVDMToolPath: ToolLocator.executable(named: "macvdmtool"),
-            cfgutilPath: ToolLocator.executable(named: "cfgutil")
+            macVDMToolPath: macVDMTool?.url,
+            cfgutilPath: ToolLocator.executable(named: "cfgutil"),
+            macVDMToolSource: macVDMTool?.source
         ), targets: try discovery.devices())
     }
 }

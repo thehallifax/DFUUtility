@@ -84,7 +84,7 @@ private struct AppMockDFU: DFUOperating { func enterDFU(timeout: TimeInterval) t
 }
 
 @Test @MainActor func doctorStatePropagates() async {
-    let app = model(); await app.refreshDiagnosticsAndTarget(); #expect(app.doctorReport?.isFundamentallyUsable == true); #expect(app.canEnterDFU)
+    let app = model(); await app.refreshDiagnosticsAndTarget(); #expect(app.doctorReport?.isFundamentallyUsable == true); #expect(!app.canEnterDFU)
 }
 
 @Test @MainActor func catalogueErrorIsActionable() async {

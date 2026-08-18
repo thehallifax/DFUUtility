@@ -26,9 +26,10 @@ public struct HostStatus: Equatable, Sendable {
     public var macOSVersion: String
     public var macVDMToolPath: URL?
     public var cfgutilPath: URL?
+    public var macVDMToolSource: ToolSource?
 
-    public init(isAppleSilicon: Bool, macOSVersion: String, macVDMToolPath: URL? = nil, cfgutilPath: URL? = nil) {
-        self.isAppleSilicon = isAppleSilicon; self.macOSVersion = macOSVersion; self.macVDMToolPath = macVDMToolPath; self.cfgutilPath = cfgutilPath
+    public init(isAppleSilicon: Bool, macOSVersion: String, macVDMToolPath: URL? = nil, cfgutilPath: URL? = nil, macVDMToolSource: ToolSource? = nil) {
+        self.isAppleSilicon = isAppleSilicon; self.macOSVersion = macOSVersion; self.macVDMToolPath = macVDMToolPath; self.cfgutilPath = cfgutilPath; self.macVDMToolSource = macVDMToolSource
     }
 }
 
@@ -48,6 +49,7 @@ public enum DFUError: LocalizedError, Equatable {
     case transitionTimedOut
     case invalidIPSW(String)
     case commandFailed(command: String, status: Int32, output: String)
+    case privilegeRequired(String)
 
     public var errorDescription: String? {
         switch self {
@@ -60,6 +62,7 @@ public enum DFUError: LocalizedError, Equatable {
         case .invalidIPSW(let reason): "Invalid IPSW: \(reason)"
         case .commandFailed(let command, let status, let output):
             "Command failed (exit \(status)): \(command)\n\(output)"
+        case .privilegeRequired(let output): "Administrator authorization for macvdmtool failed.\n\(output)"
         }
     }
 }
