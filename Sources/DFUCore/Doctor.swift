@@ -4,6 +4,9 @@ public struct DoctorReport: Sendable {
     public let status: UtilityStatus; public let configuratorPresent: Bool; public let cacheDirectory: URL; public let cacheWritable: Bool; public let restoreSupported: Bool
     public var isFundamentallyUsable: Bool { status.host.isAppleSilicon && status.host.cfgutilPath != nil && configuratorPresent && cacheWritable && restoreSupported }
     public var setupComplete: Bool { isFundamentallyUsable && status.host.macVDMToolPath != nil }
+    public init(status: UtilityStatus, configuratorPresent: Bool, cacheDirectory: URL, cacheWritable: Bool, restoreSupported: Bool) {
+        self.status = status; self.configuratorPresent = configuratorPresent; self.cacheDirectory = cacheDirectory; self.cacheWritable = cacheWritable; self.restoreSupported = restoreSupported
+    }
 }
 public struct DoctorService: Sendable {
     private let statusService: StatusService; private let cache: IPSWCache; private let runner: any CommandRunning

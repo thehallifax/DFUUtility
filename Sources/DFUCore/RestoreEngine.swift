@@ -2,6 +2,8 @@ import Foundation
 
 public enum RestoreAction: Sendable { case restore(URL), revive, reboot }
 
+public enum RestoreEvent: Sendable { case preparing, waitingForDevice, started, progress(Double?), message(String), completed }
+
 public struct RestoreEngine: Sendable {
     private let discovery: any DeviceDiscovering
     private let runner: any CommandRunning
@@ -59,4 +61,17 @@ public struct RestoreEngine: Sendable {
         }
     }
 
+    public func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached {
+                continuation.yield(.preparing)
+                do {
+                    try Task.checkCancellation(); continuation.yield(.waitingForDevice)
+                    try Task.checkCancellation(); continuation.yield(.started)
+                    try perform(action); continuation.yield(.completed); continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }

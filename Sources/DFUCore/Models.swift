@@ -26,11 +26,17 @@ public struct HostStatus: Equatable, Sendable {
     public var macOSVersion: String
     public var macVDMToolPath: URL?
     public var cfgutilPath: URL?
+
+    public init(isAppleSilicon: Bool, macOSVersion: String, macVDMToolPath: URL? = nil, cfgutilPath: URL? = nil) {
+        self.isAppleSilicon = isAppleSilicon; self.macOSVersion = macOSVersion; self.macVDMToolPath = macVDMToolPath; self.cfgutilPath = cfgutilPath
+    }
 }
 
 public struct UtilityStatus: Equatable, Sendable {
     public var host: HostStatus
     public var targets: [DFUDevice]
+
+    public init(host: HostStatus, targets: [DFUDevice]) { self.host = host; self.targets = targets }
 }
 
 public enum DFUError: LocalizedError, Equatable {

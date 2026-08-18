@@ -49,13 +49,20 @@ struct DFUCLI {
                 let build = arguments[index + 1]; guard let found = releases.first(where: { $0.build == build }) else { throw IPSWServiceError.unknownBuild(build) }; release = found
             } else { usage(exitCode: 64) }
             if let cached = try cache.validCachedURL(for: release, validator: validator) { print("Using valid cached IPSW:\n\(cached.path)"); return }
-            let partial = cache.partialURL(for: release), partialSize = ((try? FileManager.default.attributesOfItem(atPath: partial.path)[.size]) as? NSNumber)?.int64Value ?? 0
-            print("Downloading macOS \(release.version) (\(release.build))"); if partialSize > 0 { print("Found partial download: \(formatBytes(partialSize))\nResuming…") }
-            let url = try await service.download(release) { value in
-                let percent = value.total.map { $0 > 0 ? " \(Int(Double(value.received) / Double($0) * 100))%" : "" } ?? ""
-                FileHandle.standardError.write(Data("\r\(formatBytes(value.received)) / \(formatBytes(value.total))\(percent)  \(formatRate(value.bytesPerSecond))".utf8))
+            var completedURL: URL?
+            for try await event in service.downloadEvents(release) {
+                switch event {
+                case .started: print("Downloading macOS \(release.version) (\(release.build))")
+                case .resumed(let bytes): print("Found partial download: \(formatBytes(bytes))\nResuming…")
+                case .progress(let completed, let total, let speed):
+                    let percent = total.map { $0 > 0 ? " \(Int(Double(completed) / Double($0) * 100))%" : "" } ?? ""
+                    FileHandle.standardError.write(Data("\r\(formatBytes(completed)) / \(formatBytes(total))\(percent)  \(formatRate(speed ?? 0))".utf8))
+                case .validating: FileHandle.standardError.write(Data("\nValidating image…\n".utf8))
+                case .completed(let url): completedURL = url
+                case .cancelled: FileHandle.standardError.write(Data("\nDownload cancelled; partial retained.\n".utf8))
+                }
             }
-            FileHandle.standardError.write(Data("\n".utf8)); print("Cached and validated:\n\(url.path)")
+            if let completedURL { FileHandle.standardError.write(Data("\n".utf8)); print("Cached and validated:\n\(completedURL.path)") }
         case "cache":
             let entries = try cache.entries(validator: validator); print("Cached IPSWs")
             if entries.isEmpty { print("None") }

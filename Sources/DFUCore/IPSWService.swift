@@ -22,16 +22,39 @@ public struct IPSWRelease: Codable, Hashable, Sendable {
 
 public struct DownloadProgress: Sendable { public let received: Int64; public let total: Int64?; public let bytesPerSecond: Double; public let resumed: Bool }
 
+public enum DownloadEvent: Sendable {
+    case started(release: IPSWRelease)
+    case resumed(existingBytes: Int64)
+    case progress(completed: Int64, total: Int64?, bytesPerSecond: Double?)
+    case validating
+    case completed(url: URL)
+    case cancelled
+}
+
 public protocol IPSWService: Sendable {
     func availableImages(for device: DFUDevice?) async throws -> [IPSWRelease]
     func recommendedImage(for device: DFUDevice?) async throws -> IPSWRelease
     func download(_ release: IPSWRelease, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws -> URL
+    func downloadEvents(_ release: IPSWRelease) -> AsyncThrowingStream<DownloadEvent, Error>
 }
 
 public extension IPSWService {
     func availableImages(for device: DFUDevice) async throws -> [IPSWRelease] { try await availableImages(for: Optional(device)) }
     func recommendedImage(for device: DFUDevice) async throws -> IPSWRelease { try await recommendedImage(for: Optional(device)) }
     func download(_ release: IPSWRelease) async throws -> URL { try await download(release, progress: { _ in }) }
+    func downloadEvents(_ release: IPSWRelease) -> AsyncThrowingStream<DownloadEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                continuation.yield(.started(release: release))
+                do {
+                    let url = try await download(release) { value in continuation.yield(.progress(completed: value.received, total: value.total, bytesPerSecond: value.bytesPerSecond)) }
+                    continuation.yield(.completed(url: url)); continuation.finish()
+                } catch is CancellationError { continuation.yield(.cancelled); continuation.finish() }
+                catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 public enum IPSWServiceError: LocalizedError, Equatable {
@@ -71,6 +94,27 @@ public struct AppleIPSWService: IPSWService {
         try await downloader.download(release, to: partial, progress: progress)
         try validator.validate(partial, release: release, verifyChecksum: true)
         return try cache.commit(partial: partial, release: release)
+    }
+    public func downloadEvents(_ release: IPSWRelease) -> AsyncThrowingStream<DownloadEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                continuation.yield(.started(release: release))
+                do {
+                    try cache.prepare()
+                    if let hit = try cache.validCachedURL(for: release, validator: validator) { continuation.yield(.completed(url: hit)); continuation.finish(); return }
+                    let partial = cache.partialURL(for: release)
+                    let existing = ((try? FileManager.default.attributesOfItem(atPath: partial.path)[.size]) as? NSNumber)?.int64Value ?? 0
+                    if existing > 0 { continuation.yield(.resumed(existingBytes: existing)) }
+                    try await downloader.download(release, to: partial) { value in continuation.yield(.progress(completed: value.received, total: value.total, bytesPerSecond: value.bytesPerSecond)) }
+                    try Task.checkCancellation(); continuation.yield(.validating)
+                    try validator.validate(partial, release: release, verifyChecksum: true)
+                    try Task.checkCancellation(); let url = try cache.commit(partial: partial, release: release)
+                    continuation.yield(.completed(url: url)); continuation.finish()
+                } catch is CancellationError { continuation.yield(.cancelled); continuation.finish() }
+                catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
     public static func sortNewestFirst(_ releases: [IPSWRelease]) -> [IPSWRelease] {
         releases.sorted { a, b in
