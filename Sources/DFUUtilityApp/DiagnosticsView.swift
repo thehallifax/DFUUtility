@@ -11,7 +11,7 @@ struct DiagnosticsView: View {
                 Text("macOS: \(report.status.host.macOSVersion)")
                 diagnostic("Apple Configurator", report.configuratorPresent)
                 diagnostic("cfgutil", report.status.host.cfgutilPath != nil, detail: report.status.host.cfgutilPath?.path)
-                diagnostic("macvdmtool", report.status.host.macVDMToolPath != nil, detail: report.status.host.macVDMToolPath?.path)
+                diagnostic("macvdmtool — \(report.status.host.macVDMToolSource?.category ?? "Unavailable")", report.status.host.macVDMToolPath != nil, detail: report.status.host.macVDMToolPath?.path)
                 diagnostic("Restore support", report.restoreSupported)
                 diagnostic("Cache writable", report.cacheWritable, detail: report.cacheDirectory.path)
                 Divider()

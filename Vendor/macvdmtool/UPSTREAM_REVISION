@@ -1,0 +1,10 @@
+Repository: https://github.com/AsahiLinux/macvdmtool
+Commit: b22ae51eb43a0e1daa21d41616ac899f28e7bf8a
+Vendored: 2026-08-18
+
+Files copied without source modifications:
+- main.cpp
+- ssops.h
+- AppleHPMLib.h
+- LICENSE
+- README.upstream.md

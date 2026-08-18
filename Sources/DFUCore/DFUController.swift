@@ -16,25 +16,33 @@ public struct DFUController: Sendable {
         guard let tool else { throw DFUError.toolUnavailable("macvdmtool (set DFUCTL_MACVDMTOOL_PATH if installed elsewhere)") }
 
         let existing = try discovery.devices()
+        guard !existing.isEmpty else { throw DFUError.noTarget }
         if existing.count > 1 { throw DFUError.multipleTargets(existing.count) }
-        let command: URL
-        let arguments: [String]
-        if geteuid() == 0 {
-            command = tool; arguments = ["dfu"]
-        } else {
-            command = URL(fileURLWithPath: "/usr/bin/sudo"); arguments = [tool.path, "dfu"]
-        }
-        let result = try runner.run(command, arguments: arguments)
+        let expectedECID = existing[0].ecid
+        let invocation = Self.command(tool: tool, isRoot: geteuid() == 0)
+        let result = try runner.runInteractive(invocation.executable, arguments: invocation.arguments)
         guard result.status == 0 else {
+            if invocation.executable.path == "/usr/bin/sudo" {
+                let detail = result.combinedOutput.isEmpty ? "sudo exited with status \(result.status). Authentication may have failed or been cancelled." : result.combinedOutput
+                throw DFUError.privilegeRequired(detail)
+            }
             throw DFUError.commandFailed(command: "macvdmtool dfu", status: result.status, output: result.combinedOutput)
         }
 
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            if try discovery.devices().contains(where: { $0.state == .dfu }) { return }
+            if try discovery.devices().contains(where: { device in
+                guard device.state == .dfu else { return false }
+                guard let expectedECID, let observedECID = device.ecid else { return true }
+                return expectedECID.caseInsensitiveCompare(observedECID) == .orderedSame
+            }) { return }
             Thread.sleep(forTimeInterval: 1)
         } while Date() < deadline
         throw DFUError.transitionTimedOut
+    }
+
+    public static func command(tool: URL, isRoot: Bool) -> (executable: URL, arguments: [String]) {
+        isRoot ? (tool, ["dfu"]) : (URL(fileURLWithPath: "/usr/bin/sudo"), [tool.path, "dfu"])
     }
 }
 

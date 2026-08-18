@@ -43,7 +43,7 @@ public final class AppModel: ObservableObject {
 
     public var target: DFUDevice? { targetDevices.count == 1 ? targetDevices[0] : nil }
     public var imageURL: URL? { if case .ready(let url) = imageState { return url }; return nil }
-    public var canEnterDFU: Bool { !isDemoMode && doctorReport?.status.host.macVDMToolPath != nil && restoreState == .idle }
+    public var canEnterDFU: Bool { !isDemoMode && geteuid() == 0 && doctorReport?.status.host.macVDMToolPath != nil && restoreState == .idle }
     public var canRestore: Bool { !isDemoMode && target?.state == .dfu && imageURL != nil && restoreState == .idle }
     public var canRevive: Bool { !isDemoMode && (target?.state == .dfu || target?.state == .recovery) && restoreState == .idle }
 

@@ -23,7 +23,7 @@ system_profiler SPUSBDataType
 ioreg -p IOUSB -l -w 0
 ```
 
-No target Mac was connected during the spike, so no destructive restore/revive and no VDM transition were performed. The implementation and argument shapes are tested against the installed help, but require hardware integration testing.
+The initial spike had no target. Subsequent integration testing used a MacBook Air M2 (`Mac14,2`, ECID `0x1569301A08C01E`) and is recorded below. No destructive restore has been performed.
 
 Relevant `cfgutil` 2.20 surfaces:
 
@@ -39,7 +39,25 @@ For DFU, the upstream command is:
 sudo macvdmtool dfu
 ```
 
-The upstream project documents port/cable requirements and Apache-2.0 licensing. This repository invokes an externally installed binary and does not vendor its code. If it is bundled later, include its `LICENSE` and notices and publish corresponding source modifications as required by Apache-2.0.
+The upstream project documents port/cable requirements and Apache-2.0 licensing. This repository vendors the unchanged source pinned in `Vendor/macvdmtool/UPSTREAM_REVISION`, builds it as a SwiftPM product, and packages its full license and revision record with the app.
+
+## Real hardware results
+
+Hardware: MacBook Air M2, model `Mac14,2`, ECID `0x1569301A08C01E`, connected to the Apple Silicon host through the applicable DFU USB-C path.
+
+| Workflow | Result |
+|---|---|
+| Normal-state discovery, model, and ECID | PASS |
+| Manually entered DFU discovery | PASS |
+| `cfgutil revive` | PASS |
+| Real `cfgutil` progress output | PASS |
+| Apple MobileAsset IPSW catalogue | PASS |
+| 19.77 GB Apple IPSW download | PASS |
+| IPSW validation and cache | PASS |
+| Project-built `macvdmtool` direct Normal → DFU | PASS |
+| `dfuctl` sudo wrapper before TTY fix | FAIL: capturing runner and background child process group disrupted terminal authentication |
+
+The direct project-built helper emitted the expected HPM discovery, DBMa entry, and reboot messages and moved the same ECID from Normal to DFU. The revive exposed numeric `cfgutil` progress events for both **Unzipping System** and **Installing System**. Those real events should feed a later structured GUI progress parser rather than an invented percentage.
 
 ## Detection and state
 
