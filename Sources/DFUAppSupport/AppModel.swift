@@ -44,11 +44,12 @@ public final class AppModel: ObservableObject {
     private let restoreEngine: any RestoreOperating
     private let dfuController: any DFUOperating
     private let operationLogger: any OperationLogging
+    private let requiresPrivilegedHelperSetup: Bool
     private var downloadTask: Task<Void, Never>?
 
-    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: any DFUOperating = PrivilegedDFUOperator(), operationLogger: any OperationLogging = OperationLogger(), isDemoMode: Bool = false) {
+    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: any DFUOperating = PrivilegedDFUOperator(), operationLogger: any OperationLogging = OperationLogger(), requiresPrivilegedHelperSetup: Bool = true, isDemoMode: Bool = false) {
         self.ipswService = ipswService; self.discovery = discovery; self.cache = cache; self.validator = validator
-        self.diagnostics = diagnostics; self.restoreEngine = restoreEngine; self.dfuController = dfuController; self.operationLogger = operationLogger; self.isDemoMode = isDemoMode
+        self.diagnostics = diagnostics; self.restoreEngine = restoreEngine; self.dfuController = dfuController; self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = requiresPrivilegedHelperSetup; self.isDemoMode = isDemoMode
     }
 
     public var target: DFUDevice? { targetDevices.count == 1 ? targetDevices[0] : nil }
@@ -68,7 +69,7 @@ public final class AppModel: ObservableObject {
         }
     }
     public var imageURL: URL? { if case .ready(let url) = imageState { return url }; return nil }
-    public var canEnterDFU: Bool { !isDemoMode && target?.state == .normal && doctorReport?.status.host.macVDMToolPath != nil && restoreState == .idle }
+    public var canEnterDFU: Bool { !isDemoMode && target?.state == .normal && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && restoreState == .idle }
     public var canRestore: Bool { !isDemoMode && target?.state == .dfu && imageURL != nil && restoreState == .idle }
     public var canRevive: Bool { !isDemoMode && (target?.state == .dfu || target?.state == .recovery) && restoreState == .idle }
 
@@ -82,9 +83,19 @@ public final class AppModel: ObservableObject {
     }
 
     public func refreshDiagnosticsAndTarget() async {
-        privilegedHelperState = PrivilegedDFUClient().state()
+        privilegedHelperState = await Task.detached { PrivilegedDFUClient().state() }.value
         do { doctorReport = try diagnostics.report() } catch { presentedError = error.localizedDescription }
         do { targetDevices = try discovery.devices() } catch { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
+    }
+
+    public func setUpPrivilegedHelper() async {
+        privilegedHelperState = .registrationRequested
+        do {
+            privilegedHelperState = try await Task.detached { try PrivilegedDFUClient().setUp() }.value
+        } catch {
+            privilegedHelperState = .failed(error.localizedDescription)
+            presentedError = "DFU helper setup failed.\n\(error.localizedDescription)"
+        }
     }
 
     public func selectRelease(_ release: IPSWRelease) { selectedRelease = release; refreshSelectedCacheState() }

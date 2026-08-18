@@ -3,7 +3,7 @@ import Foundation
 import Security
 
 private final class PrivilegedService: NSObject, PrivilegedDFUXPCProtocol {
-    func status(reply: @escaping (Int, String) -> Void) { reply(PrivilegedDFUConstants.helperVersion, "Available") }
+    func status(reply: @escaping (Int, String) -> Void) { reply(BuildMetadata.helperProtocolVersion, BuildMetadata.displayVersion) }
 
     func enterDFU(authorization: Data, reply: @escaping (Int32, String?) -> Void) {
         guard validateAuthorization(authorization) else { reply(EPERM, "Administrator authorization failed."); return }
@@ -74,13 +74,18 @@ private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         var expectedCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(appURL as CFURL, [], &expectedCode) == errSecSuccess, let expectedCode else { return false }
         var expectedInfo: CFDictionary?
-        guard SecCodeCopySigningInformation(expectedCode, SecCSFlags(rawValue: kSecCSSigningInformation), &expectedInfo) == errSecSuccess,
-              let expected = expectedInfo as? [CFString: Any],
-              let callerHash = values[kSecCodeInfoUnique] as? Data,
-              let expectedHash = expected[kSecCodeInfoUnique] as? Data,
-              callerHash == expectedHash else { return false }
-        if let expectedTeam = expected[kSecCodeInfoTeamIdentifier] as? String { return caller.teamIdentifier == expectedTeam }
-        return caller.teamIdentifier == nil
+        guard SecStaticCodeCheckValidity(expectedCode, [], nil) == errSecSuccess,
+              SecStaticCodeCheckValidity(guestStatic, [], nil) == errSecSuccess,
+              SecCodeCopySigningInformation(expectedCode, SecCSFlags(rawValue: kSecCSSigningInformation), &expectedInfo) == errSecSuccess,
+              let expected = expectedInfo as? [CFString: Any] else { return false }
+        if let expectedTeam = expected[kSecCodeInfoTeamIdentifier] as? String {
+            // Stable production requirement: valid code, exact app identifier,
+            // and the same Developer ID Team ID permit signed upgrades.
+            return caller.teamIdentifier == expectedTeam
+        }
+        guard let callerHash = values[kSecCodeInfoUnique] as? Data,
+              let expectedHash = expected[kSecCodeInfoUnique] as? Data else { return false }
+        return caller.teamIdentifier == nil && callerHash == expectedHash
     }
 }
 

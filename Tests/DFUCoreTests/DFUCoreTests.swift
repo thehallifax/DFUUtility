@@ -241,3 +241,33 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     // controlled executable, command, or argument crosses the boundary.
     #expect(NSStringFromSelector(#selector(PrivilegedDFUXPCProtocol.enterDFU(authorization:reply:))) == "enterDFUWithAuthorization:reply:")
 }
+
+@Test func helperProtocolVersionCompatibilityIsExplicit() {
+    #expect(HelperProtocolCompatibility.evaluate(installed: 1, required: 1) == .compatible)
+    #expect(HelperProtocolCompatibility.evaluate(installed: 1, required: 2) == .outdated)
+    #expect(HelperProtocolCompatibility.evaluate(installed: 3, required: 2) == .newerIncompatible)
+}
+
+@Test func helperRegistrationAndUpgradeStatesAreDistinct() {
+    #expect(HelperStateResolver.resolve(registration: .notRegistered) == .notRegistered)
+    #expect(HelperStateResolver.resolve(registration: .registrationRequested) == .registrationRequested)
+    #expect(HelperStateResolver.resolve(registration: .awaitingApproval) == .awaitingApproval)
+    #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 0) == .upgradeRequired(installedProtocol: 0))
+    #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 2) == .incompatibleNewer(installedProtocol: 2))
+    #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 1, version: "0.4.0") == .running(version: "0.4.0", protocolVersion: 1))
+    #expect(HelperStateResolver.resolve(registration: .notRegistered) == .notRegistered) // post-uninstall state
+}
+
+@Test func buildVersionAndDiagnosticsMetadataPropagate() throws {
+    #expect(BuildMetadata.displayVersion == "0.4.0 (1)")
+    #expect(BuildMetadata.helperProtocolVersion == 1)
+    let text = AcceptanceDiagnostics.render(report: nil, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
+    #expect(text.contains("App version: 0.4.0 (1)")); #expect(text.contains("Helper upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+}
+
+@Test func packagingScriptRejectsUnknownArgumentsBeforeBuilding() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = [root.appendingPathComponent("scripts/package-app.sh").path, "--unknown"]
+    process.standardOutput = Pipe(); process.standardError = Pipe(); try process.run(); process.waitUntilExit()
+    #expect(process.terminationStatus == 64)
+}

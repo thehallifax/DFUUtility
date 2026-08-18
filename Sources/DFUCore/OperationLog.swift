@@ -18,7 +18,7 @@ public final class OperationLogger: @unchecked Sendable, OperationLogging {
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime]
         let safeDate = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let url = directory.appendingPathComponent("\(safeDate)-\(operation.lowercased()).log")
-        let header = "Timestamp: \(formatter.string(from: Date()))\nOperation: \(operation)\nTarget model: \(target?.model ?? "Unknown")\nTarget ECID: \(target?.ecid ?? "Unknown")\nIPSW: \(release.map { "macOS \($0.version) (\($0.build))" } ?? "Not applicable")\n\n"
+        let header = "Timestamp: \(formatter.string(from: Date()))\nDFUUtility: \(BuildMetadata.displayVersion)\nGit commit: \(BuildMetadata.gitCommit)\nOperation: \(operation)\nTarget model: \(target?.model ?? "Unknown")\nTarget ECID: \(target?.ecid ?? "Unknown")\nIPSW: \(release.map { "macOS \($0.version) (\($0.build))" } ?? "Not applicable")\n\n"
         try Data(redact(header).utf8).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return url

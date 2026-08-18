@@ -33,7 +33,25 @@ scripts/package-app.sh release
 open .build/app/DFUUtility.app
 ```
 
+This is explicitly an ad-hoc development package. For signed distribution:
+
+```sh
+scripts/package-app.sh release \
+  --identity "Developer ID Application: Example Name (TEAMID)"
+scripts/verify-app.sh .build/app/DFUUtility.app
+scripts/notarize-app.sh .build/app/DFUUtility.app \
+  --keychain-profile DFUUtilityNotary
+```
+
+Packaging signs nested code explicitly, enables hardened runtime for Developer ID builds, verifies signatures/Team IDs/entitlements, and creates a ZIP under `.build/distribution/`. It never falls back to ad-hoc signing when an identity was requested. See [signing and distribution](docs/SIGNING_AND_DISTRIBUTION.md) and the [clean-machine acceptance checklist](docs/CLEAN_MACHINE_ACCEPTANCE.md).
+
 Normal use is: connect one target, click **Enter DFU**, approve the standard macOS authorization dialog, download the recommended image if needed, then choose **Revive Mac** or **Restore Mac**. Restore always presents a destructive confirmation. Local operation logs live under `~/Library/Logs/DFUUtility/`.
+
+On first launch, click **Set Up DFU Helper**. If macOS requires approval, the app reports **Awaiting user approval** and links to System Settings. Ready means the registered service has responded with the compatible protocol—not merely that registration was requested. To unregister before removal:
+
+```sh
+scripts/uninstall-helper.sh /Applications/DFUUtility.app
+```
 
 ## Build and inspect the host
 
@@ -101,6 +119,7 @@ Broader Apple Silicon hardware coverage is still required.
 - Restore stages and stage-local percentages come from real `cfgutil` events; the app does not fabricate an overall percentage. Active restore cancellation is intentionally not presented until hardware-tested safely.
 - Manual IPSW validation confirms archive structure but does not invent version/build metadata when it cannot be read reliably.
 - `scripts/package-app.sh` applies consistent ad-hoc signatures and embeds the Service Management daemon for local testing. Distribution still requires Developer ID signing, hardened runtime, notarization/stapling, and testing from a stable application location.
+- A clean-machine Developer ID/notarization acceptance run has not yet been performed. Hardware validated on MacBook Air M2 (Mac14,2); broader Apple Silicon and T2 coverage remains to be tested.
 
 ## Third-party licenses
 

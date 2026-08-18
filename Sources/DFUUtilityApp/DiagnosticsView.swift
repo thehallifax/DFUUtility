@@ -1,28 +1,27 @@
+import AppKit
 import DFUCore
 import SwiftUI
 
 struct DiagnosticsView: View {
     let report: DoctorReport?
     var helperState: PrivilegedHelperState = PrivilegedDFUClient().state()
+    private var text: String { AcceptanceDiagnostics.render(report: report, helperState: helperState) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Diagnostics").font(.title.bold())
-            if let report {
-                diagnostic("Apple Silicon", report.status.host.isAppleSilicon)
-                Text("macOS: \(report.status.host.macOSVersion)")
-                diagnostic("Apple Configurator", report.configuratorPresent)
-                diagnostic("cfgutil", report.status.host.cfgutilPath != nil, detail: report.status.host.cfgutilPath?.path)
-                diagnostic("macvdmtool — \(report.status.host.macVDMToolSource?.category ?? "Unavailable")", report.status.host.macVDMToolPath != nil, detail: report.status.host.macVDMToolPath?.path)
-                diagnostic("Privileged DFU Helper", helperState == .registered || helperState == .available || helperState == .installed, detail: String(describing: helperState))
-                diagnostic("Restore support", report.restoreSupported)
-                diagnostic("Cache writable", report.cacheWritable, detail: report.cacheDirectory.path)
-                Divider()
-                Text("Target: \(report.status.targets.isEmpty ? "No target connected" : report.status.targets.map(\.state.rawValue).joined(separator: ", "))")
-            } else { ProgressView("Loading diagnostics…") }
-            Spacer()
+            ScrollView { Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+            HStack {
+                Button("Copy Diagnostics") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
+                Button("Save Diagnostics…") { save() }
+                Spacer()
+            }
         }
     }
-    private func diagnostic(_ title: String, _ success: Bool, detail: String? = nil) -> some View {
-        VStack(alignment: .leading) { Label(title, systemImage: success ? "checkmark.circle.fill" : "xmark.circle.fill").foregroundStyle(success ? .green : .red); if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) } }
+
+    private func save() {
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "DFUUtility-Diagnostics.txt"; panel.allowedContentTypes = [.plainText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? text.write(to: url, atomically: true, encoding: .utf8)
     }
 }
