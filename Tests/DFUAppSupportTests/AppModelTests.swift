@@ -25,6 +25,7 @@ private struct AppMockDiagnostics: DiagnosticsProviding {
 }
 private struct AppMockRestore: RestoreOperating { func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> { AsyncThrowingStream { $0.yield(.completed); $0.finish() } } }
 private struct AppMockDFU: DFUOperating { func enterDFU(timeout: TimeInterval) throws {} }
+private struct CancelledDFU: DFUOperating { func enterDFU(timeout: TimeInterval) throws { throw PrivilegedDFUClientError.authorizationCancelled } }
 
 @MainActor private func model(service: AppMockService = AppMockService(), devices: [DFUDevice] = [], validator: AppMockValidator = AppMockValidator(valid: true), cache: IPSWCache = tempCache(), demo: Bool = false) -> AppModel {
     AppModel(ipswService: service, discovery: AppMockDiscovery(values: devices), cache: cache, validator: validator, diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), isDemoMode: demo)
@@ -89,4 +90,40 @@ private struct AppMockDFU: DFUOperating { func enterDFU(timeout: TimeInterval) t
 
 @Test @MainActor func catalogueErrorIsActionable() async {
     let app = model(service: AppMockService(failure: "offline")); await app.load(); if case .failed = app.catalogueState {} else { Issue.record("Expected failed catalogue") }; #expect(app.presentedError?.contains("could not be reached") == true)
+}
+
+@Test @MainActor func guiAuthorizationCancellationLeavesAppUsable() async {
+    let target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "TEST")
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: CancelledDFU())
+    await app.refreshDiagnosticsAndTarget(); #expect(app.canEnterDFU)
+    await app.enterDFU()
+    #expect(app.presentedError == "Administrator authorization was cancelled.")
+    if case .failed = app.restoreState {} else { Issue.record("Expected recoverable failure state") }
+}
+
+private struct SuccessfulPrivilegedRequest: PrivilegedDFURequesting { func enterDFU() throws {} }
+private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
+    private let lock = NSLock(); private var values: [[DFUDevice]]
+    init(_ values: [[DFUDevice]]) { self.values = values }
+    func devices() throws -> [DFUDevice] { lock.withLock { values.count > 1 ? values.removeFirst() : (values.first ?? []) } }
+}
+
+@Test func privilegedGUIOperationVerifiesSameECID() throws {
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let dfu = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xabc")
+    try PrivilegedDFUOperator(discovery: AppSequencedDiscovery([[normal], [dfu]]), client: SuccessfulPrivilegedRequest()).enterDFU(timeout: 1)
+}
+
+@Test func privilegedGUIOperationRejectsDifferentTarget() {
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let other = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xDEF")
+    #expect(throws: DFUError.targetChanged(expected: "0xABC", actual: "0xDEF")) {
+        try PrivilegedDFUOperator(discovery: AppSequencedDiscovery([[normal], [other]]), client: SuccessfulPrivilegedRequest()).enterDFU(timeout: 1)
+    }
+}
+
+@Test func postOperationReconnectSuccessAndTimeout() async {
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "TEST")
+    #expect(await ReconnectVerifier(discovery: AppMockDiscovery(values: [normal])).wait(attempts: 1, interval: .zero) == .restarted(normal))
+    #expect(await ReconnectVerifier(discovery: AppMockDiscovery(values: [])).wait(attempts: 1, interval: .zero) == .unverified)
 }

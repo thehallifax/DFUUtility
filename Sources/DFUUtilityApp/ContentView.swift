@@ -2,6 +2,7 @@ import DFUAppSupport
 import DFUCore
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
@@ -27,14 +28,16 @@ struct ContentView: View {
         .padding(24)
         .task { await model.load() }
         .sheet(isPresented: $showVersions) { VersionPicker(model: model, isPresented: $showVersions) }
-        .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport).frame(minWidth: 480, minHeight: 430).padding() }
+        .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, helperState: model.privilegedHelperState).frame(minWidth: 480, minHeight: 430).padding() }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [UTType(filenameExtension: "ipsw") ?? .data], allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first { Task { let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; await model.validateManualIPSW(url) } }
         }
         .alert("Restore this Mac?", isPresented: $confirmRestore) {
             Button("Cancel", role: .cancel) {}
             Button("Restore", role: .destructive) { model.restoreConfirmed() }
-        } message: { Text("This will erase the target Mac and reinstall macOS.") }
+        } message: {
+            Text("\(model.target?.friendlyName ?? "Target Mac")\n\(model.target?.model ?? "Unknown model")\nECID: \(model.target?.ecid ?? "Unknown")\nmacOS \(model.selectedRelease?.version ?? "selected image") (\(model.selectedRelease?.build ?? "unknown build"))\n\nThis will erase the target Mac and reinstall macOS.")
+        }
         .alert("DFUUtility", isPresented: Binding(get: { model.presentedError != nil }, set: { if !$0 { model.presentedError = nil } })) { Button("OK") { model.presentedError = nil } } message: { Text(model.presentedError ?? "") }
     }
 
@@ -44,8 +47,9 @@ struct ContentView: View {
                 if model.targetDevices.isEmpty { Text("No device connected").foregroundStyle(.secondary) }
                 else if model.targetDevices.count > 1 { Text("Multiple targets detected — disconnect all but one.").foregroundStyle(.orange) }
                 else if let target = model.target {
-                    LabeledContent("State", value: target.state.rawValue)
-                    if let modelName = target.model { LabeledContent("Model", value: modelName) }
+                    if let name = target.friendlyName { Text(name).font(.title2.bold()) }
+                    LabeledContent("State", value: model.targetWorkflowState.rawValue)
+                    if let modelName = target.model { LabeledContent("Identifier", value: modelName) }
                     if let ecid = target.ecid { LabeledContent("ECID", value: ecid) }
                 }
                 if model.isDemoMode {
@@ -58,7 +62,7 @@ struct ContentView: View {
                     Button("Refresh") { Task { await model.refreshDiagnosticsAndTarget() } }
                 }
                 if model.doctorReport?.status.host.macVDMToolPath == nil { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
-                else if geteuid() != 0 { Text("GUI authorization requires the planned privileged service. Use dfuctl dfu from Terminal for now.").font(.caption).foregroundStyle(.secondary) }
+                else if model.privilegedHelperState == .notRegistered { Text("macOS will request administrator authorization and register the privileged DFU helper when needed.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label("Target Mac", systemImage: "desktopcomputer") }
     }
@@ -82,9 +86,22 @@ struct ContentView: View {
                     Button("Other Version…") { showVersions = true }.disabled(model.availableReleases.isEmpty)
                     Button("Choose IPSW…") { showImporter = true }
                 }
-                if case .running(let message) = model.restoreState { ProgressView(message) }
+                if case .running(_, let stage, let fraction) = model.restoreState {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(stage)
+                        if let fraction { ProgressView(value: fraction); Text("\(Int(fraction * 100))%").font(.caption.monospacedDigit()) }
+                        else { ProgressView() }
+                        Text("Do not disconnect the target Mac.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if case .reconnecting = model.restoreState { ProgressView("Operation completed. Waiting for Mac to restart…") }
+                if case .completed(let message) = model.restoreState { Label(message, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                 if case .failed(let message) = model.restoreState { Label(message, systemImage: "xmark.circle").foregroundStyle(.red) }
                 Button("Restore Mac", role: .destructive) { confirmRestore = true }.disabled(!model.canRestore)
+                HStack {
+                    if let log = model.lastLogURL { Button("View Log") { NSWorkspace.shared.open(log) } }
+                    Button("Reveal Logs in Finder") { NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DFUUtility")]) }
+                }
                 if !model.canRestore { Text("Restore requires a validated image and a positively detected real DFU target.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label("macOS Restore", systemImage: "arrow.down.circle") }

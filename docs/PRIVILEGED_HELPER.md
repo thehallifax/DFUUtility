@@ -2,38 +2,55 @@
 
 Last reviewed: 18 August 2026.
 
-## Current milestone boundary
+## CLI privilege boundary
 
-DFUUtility builds and distributes the pinned `macvdmtool` binary, but does not grant it persistent privilege. The CLI retains the existing transparent terminal boundary:
+The CLI remains transparent and terminal-native:
 
 ```text
 dfuctl → /usr/bin/sudo <resolved-macvdmtool> dfu
 ```
 
-When already running as root, it invokes the resolved tool directly. For the interactive CLI path, `ProcessRunner.runInteractive` explicitly attaches the child process's standard input, output, and error to the caller's corresponding terminal file handles. Foundation creates the child in a new process group, so the runner temporarily makes that group the terminal foreground group and restores the dfuctl group after it exits. Nothing is piped or forwarded by Swift. `sudo` therefore owns terminal echo, authentication, output, and Ctrl-C behavior; DFUUtility never receives, captures, or stores an administrator password. The binary is neither setuid nor installed with weakened permissions. A failed or cancelled authorization is returned as an explicit privilege error; sudo's useful diagnostic is already displayed directly on the terminal.
+`ProcessRunner.runInteractive` attaches all three standard handles to the controlling terminal and makes Foundation's child process group the foreground group until it exits. `sudo` owns echo, authentication, output, and Ctrl-C. DFUUtility never receives or stores a password. Nothing is setuid and permissions are not weakened.
 
-The process-group handoff cannot be faithfully unit-tested without a real controlling terminal. The manual regression is `dfuctl dfu`: while sudo waits, its process group must equal the TTY foreground group and terminal `echo` must be disabled. Hardware validation must then confirm the same ECID reappears in DFU.
+## Implemented GUI architecture
 
-The SwiftUI app must not present a custom password prompt or attempt to drive `sudo`, which does not provide an appropriate GUI authorization architecture. Enter DFU remains unable to elevate reliably from a packaged GUI until the production helper described below is implemented.
+The SwiftUI app never invokes `sudo`. `PrivilegedDFUOperator` registers the embedded launch daemon using `SMAppService`, asks Authorization Services for the application-specific `org.dfuutility.enter-dfu` right, and sends only its external authorization form over privileged XPC. The system supplies the administrator UI. Cancellation and failure return actionable errors and leave the app usable.
 
-## Recommended production design
+The daemon exports one privileged action, `enterDFU`; its only other method is read-only version/status diagnostics. It:
 
-Use a narrowly scoped, code-signed, `launchd`-managed privileged service registered with `SMAppService` on macOS 13+. Apple describes `SMAppService` as the current API for registering bundled LaunchAgents and LaunchDaemons; `SMJobBless` is deprecated. The main app stays unprivileged and sends a typed XPC request to the helper.
+1. rejects callers whose signed identifier is not `org.dfuutility.app`;
+2. binds ad-hoc development connections to the exact containing app code-directory hash and compares Team ID when available;
+3. reconstructs and checks the authorization right inside the privileged process;
+4. resolves the fixed bundled `macvdmtool` path itself and supplies the fixed `dfu` argument;
+5. rejects a writable, non-executable, or invalidly signed tool;
+6. has no API for paths, arbitrary arguments, shell commands, networking, revive, or restore.
 
-The privileged service should:
+The app still verifies that the exact pre-operation ECID reappears in DFU. The helper's successful exit alone is insufficient.
 
-1. expose only a single operation such as `enterDFU`, not arbitrary executable paths or arguments;
-2. validate the connecting client's code signature, designated requirement, team identifier, and protocol version before accepting a request;
-3. request/check an application-specific Authorization Services right immediately before the operation, using the system authorization UI;
-4. execute the pinned VDM implementation in-process or as a fixed, verified bundled child—never a caller-supplied path;
-5. validate ownership, mode, code signature, and expected hash of any child binary;
-6. return structured status and raw IOKit errors over XPC;
-7. run only for the minimum time necessary and carry no networking, filesystem-general, shell, or restore capability;
-8. keep restore in the separate unprivileged `cfgutil` engine and never chain DFU into restore.
+```text
+DFUUtility.app/Contents/MacOS/DFUUtility
+DFUUtility.app/Contents/Library/LaunchServices/DFUPrivilegedHelper
+DFUUtility.app/Contents/Library/LaunchDaemons/org.dfuutility.privileged-helper.plist
+DFUUtility.app/Contents/Resources/macvdmtool
+```
 
-The application and daemon will need consistent signing identities, hardened runtime configuration, launch daemon property-list metadata inside the signed app, secure XPC interfaces, and an installation/registration UX that reflects `SMAppService.Status`. Authorization Services is unavailable to sandboxed apps for privilege escalation, so distribution and sandbox strategy must be resolved before implementation.
+`AuthorizationExecuteWithPrivileges`, setuid, custom password dialogs, and GUI-driven `sudo` are deliberately not used.
 
-Do not use `AuthorizationExecuteWithPrivileges`; Apple deprecates it and directs developers to a `launchd` helper and/or Service Management. Do not use a setuid copy of `macvdmtool`.
+## Registration and local development
+
+The GUI requires the packaged `.app`; `swift run DFUUtility` has no embedded daemon to register. `scripts/package-app.sh release` produces `.build/app/DFUUtility.app` with consistent ad-hoc signatures. On first registration, macOS may require approval under System Settings → General → Login Items. Diagnostics reports whether the service is registered.
+
+Ad-hoc signing is only for local development. It is not a public-distribution security identity.
+
+## Production distribution requirements
+
+Before public distribution:
+
+1. sign the app, helper, and nested tool consistently with Developer ID Application identities and hardened runtime;
+2. confirm designated requirements, Team IDs, launch-daemon metadata, and the final non-sandboxed Authorization Services strategy;
+3. archive, notarize, staple, and test clean installation, upgrade, approval, and removal from `/Applications`;
+4. exercise `SMAppService.Status.requiresApproval` on each supported macOS version;
+5. independently security-review XPC audit-token/code-signature validation and authorization-right lifecycle.
 
 ## References
 
@@ -41,4 +58,3 @@ Do not use `AuthorizationExecuteWithPrivileges`; Apple deprecates it and directs
 - [Apple: Service Management](https://developer.apple.com/documentation/servicemanagement/)
 - [Apple: Authorization Services](https://developer.apple.com/documentation/security/authorization-services)
 - [Apple: AuthorizationExecuteWithPrivileges (deprecated)](https://developer.apple.com/documentation/security/authorizationexecutewithprivileges)
-- [Apple: Authorization Services Programming Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/authorization_concepts/01introduction/introduction.html)

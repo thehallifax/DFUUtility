@@ -26,6 +26,6 @@ struct DFUUtilityApplication: App {
     var body: some Scene {
         WindowGroup("DFUUtility") { ContentView(model: model).frame(minWidth: 590, minHeight: 620) }
             .windowResizability(.contentMinSize)
-        Settings { DiagnosticsView(report: model.doctorReport) }
+        Settings { DiagnosticsView(report: model.doctorReport, helperState: model.privilegedHelperState) }
     }
 }

@@ -5,6 +5,7 @@ import Testing
 private let sampleURL = URL(string: "https://updates.cdn-apple.com/test/UniversalMac.ipsw")!
 private func release(version: String = "26.6.2", build: String = "25G83", size: Int64? = nil) -> IPSWRelease { IPSWRelease(version: version, build: build, downloadURL: sampleURL, fileSize: size, checksum: nil, supportedDevices: ["Mac14,2"]) }
 private func temporaryDirectory() throws -> URL { let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true); return url }
+private func fixture(_ name: String) throws -> Data { try Data(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/\(name)")) }
 
 private struct AcceptValidator: IPSWValidating { func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { guard FileManager.default.fileExists(atPath: url.path) else { throw DFUError.invalidIPSW("missing") } } }
 private struct RejectValidator: IPSWValidating { func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { throw DFUError.invalidIPSW("test rejection") } }
@@ -184,4 +185,59 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     let discovery = SequencedDiscovery([[normal], [normal]]), runner = InteractiveRunnerSpy()
     #expect(throws: DFUError.transitionTimedOut) { try DFUController(discovery: discovery, runner: runner, tool: URL(fileURLWithPath: "/tool")).enterDFU(timeout: 0) }
     #expect(runner.interactiveCalls == 1)
+}
+
+@Test func cfgutilParsesRealRestoreStagesAndSentinel() {
+    let fixture = try! fixture("cfgutil-restore-success.txt")
+    var parser = CFGUtilEventParser()
+    let events = parser.consume(fixture, final: true)
+    #expect(events.contains(.waitingForDevice))
+    #expect(events.contains(.stageStarted(name: "Installing System", index: 2, total: 2)))
+    #expect(events.contains(.progress(stage: "Installing System", fraction: 0.495)))
+    #expect(events.contains(.stageCompleted(name: "Installing System")))
+    #expect(!events.contains { if case .progress(_, let value) = $0 { return value < 0 }; return false })
+}
+
+@Test func cfgutilClampsProgressAndResetsStageName() {
+    let fixture = """
+    Step = "Downloading System";
+    Type = Step;
+
+    Progress = "1.7";
+    Type = Progress;
+
+    Step = "Installing System";
+    Type = Step;
+
+    Progress = "0.1";
+    Type = Progress;
+
+    """
+    var parser = CFGUtilEventParser()
+    let events = parser.consume(Data(fixture.utf8), final: true)
+    #expect(events.contains(.progress(stage: "Downloading System", fraction: 1)))
+    #expect(events.contains(.progress(stage: "Installing System", fraction: 0.1)))
+}
+
+@Test func operationLogRedactsCredentialsAndUsesPrivatePermissions() throws {
+    let root = try temporaryDirectory(), logger = OperationLogger(directory: root)
+    let url = try logger.start(operation: "Restore", target: DFUDevice(state: .dfu, model: "Mac14,2", ecid: "TEST"), release: release())
+    try logger.append("password=secret authorizationToken: abc123 useful message", to: url)
+    let text = try String(contentsOf: url, encoding: .utf8)
+    #expect(!text.contains("secret")); #expect(!text.contains("abc123")); #expect(text.contains("useful message"))
+    let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+    #expect(mode == 0o600)
+}
+
+@Test func privilegedCallerPolicyRejectsUnauthorizedIdentity() {
+    let helper = CallerIdentity(identifier: "org.dfuutility.privileged-helper", teamIdentifier: "TEAM")
+    #expect(CallerIdentityPolicy.permits(CallerIdentity(identifier: "org.dfuutility.app", teamIdentifier: "TEAM"), helper: helper, developmentAdHoc: false))
+    #expect(!CallerIdentityPolicy.permits(CallerIdentity(identifier: "org.attacker.app", teamIdentifier: "TEAM"), helper: helper, developmentAdHoc: false))
+    #expect(!CallerIdentityPolicy.permits(CallerIdentity(identifier: "org.dfuutility.app", teamIdentifier: "OTHER"), helper: helper, developmentAdHoc: false))
+}
+
+@Test func privilegedXPCSurfaceHasNoCommandOrPathParameters() {
+    // The request selector contains only authorization and reply; no caller-
+    // controlled executable, command, or argument crosses the boundary.
+    #expect(NSStringFromSelector(#selector(PrivilegedDFUXPCProtocol.enterDFU(authorization:reply:))) == "enterDFUWithAuthorization:reply:")
 }

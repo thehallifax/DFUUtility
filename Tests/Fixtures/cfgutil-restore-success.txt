@@ -1,0 +1,31 @@
+Step = "Waiting for the device";
+Type = Step;
+
+Step = "Step 1 of 2: Downloading System";
+Type = Step;
+
+Progress = "0.125";
+Step = "Step 1 of 2: Downloading System";
+Type = Progress;
+
+Step = "Step 1 of 2: Downloading System";
+Type = StepComplete;
+
+Step = "Step 2 of 2: Installing System";
+Type = Step;
+
+Progress = "0.495";
+Step = "Step 2 of 2: Installing System";
+Type = Progress;
+
+Progress = "-1";
+Step = "Step 2 of 2: Installing System";
+Type = Progress;
+
+Step = "Step 2 of 2: Installing System";
+Type = StepComplete;
+
+Restored System on Unknown device (ECID: 0xTEST000000000001).
+--- Summary ---
+Operation "restore" succeeded on 1 devices.
+Restore completed successfully.

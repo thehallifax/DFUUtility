@@ -26,14 +26,38 @@ struct DFUCLI {
             print("Target transitioned to DFU successfully.")
             if let ecid = after.targets.first(where: { $0.state == .dfu })?.ecid { print("ECID: \(ecid)") }
         case "restore":
-            guard arguments.count == 2 else { usage(exitCode: 64) }
-            try RestoreEngine().perform(.restore(URL(fileURLWithPath: NSString(string: arguments[1]).expandingTildeInPath))); print("Restore completed successfully.")
+            if arguments.count == 2, !arguments[1].hasPrefix("--") {
+                try RestoreEngine().perform(.restore(URL(fileURLWithPath: NSString(string: arguments[1]).expandingTildeInPath)))
+            } else { try await restoreRecommended(Array(arguments.dropFirst())) }
+            print("Restore completed successfully.")
         case "revive": try RestoreEngine().perform(.revive); print("Revive completed successfully.")
         case "reboot": try RestoreEngine().perform(.reboot); print("Reboot requested successfully.")
         case "recovery": throw DFUError.toolUnavailable("a reliable Apple-supported command for entering Recovery was not identified")
         case "help", "--help", "-h": usage(exitCode: 0)
         default: usage(exitCode: 64)
         }
+    }
+
+    static func restoreRecommended(_ arguments: [String]) async throws {
+        guard arguments.allSatisfy({ $0 == "--download" }) else { usage(exitCode: 64) }
+        let devices = try ConfiguratorDeviceDiscovery().devices()
+        guard devices.count == 1 else { if devices.isEmpty { throw DFUError.noTarget }; throw DFUError.multipleTargets(devices.count) }
+        guard devices[0].state == .dfu else { throw DFUError.targetNotInDFU }
+        let service = AppleIPSWService(), cache = IPSWCache(), validator = IPSWValidator()
+        let release = try await service.recommendedImage(for: devices[0])
+        var url = try cache.validCachedURL(for: release, validator: validator)
+        print("Target:\n\(devices[0].model ?? "Unknown")\nECID: \(devices[0].ecid ?? "Unknown")\nRestore image:\nmacOS \(release.version) (\(release.build))")
+        if url == nil {
+            guard arguments.contains("--download") else { throw DFUError.invalidIPSW("The recommended image is not cached. Run `dfuctl ipsw download latest` or repeat with `dfuctl restore --download`.") }
+            print("Downloading the explicitly requested image…")
+            url = try await service.download(release) { progress in
+                FileHandle.standardError.write(Data("\r\(formatBytes(progress.received)) / \(formatBytes(progress.total))".utf8))
+            }
+            FileHandle.standardError.write(Data("\n".utf8))
+        } else { print("✓ Cached and validated") }
+        print("WARNING: Restore will erase the target Mac.\nContinue? [y/N] ", terminator: "")
+        guard let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), answer == "y" || answer == "yes" else { throw CancellationError() }
+        try RestoreEngine().perform(.restore(url!))
     }
 
     static func ipsw(_ arguments: [String]) async throws {
@@ -103,7 +127,7 @@ struct DFUCLI {
     static func formatBytes(_ value: Int64?) -> String { guard let value else { return "Unknown" }; return ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
     static func formatRate(_ value: Double) -> String { value > 0 ? "\(ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .file))/s" : "" }
     static func usage(exitCode: Int32) -> Never {
-        let text = "Usage:\n  dfuctl doctor | status | dfu | revive | reboot\n  dfuctl restore /path/to/image.ipsw   # ERASES the selected target\n  dfuctl ipsw list [--verbose]\n  dfuctl ipsw latest\n  dfuctl ipsw download latest | --build BUILD\n  dfuctl ipsw cache\n  dfuctl ipsw clean --partials [--invalid]"
+        let text = "Usage:\n  dfuctl doctor | status | dfu | revive | reboot\n  dfuctl restore                       # recommended cached image; prompts\n  dfuctl restore --download            # explicitly permits download; prompts\n  dfuctl restore /path/to/image.ipsw   # scripting form; ERASES target\n  dfuctl ipsw list [--verbose]\n  dfuctl ipsw latest\n  dfuctl ipsw download latest | --build BUILD\n  dfuctl ipsw cache\n  dfuctl ipsw clean --partials [--invalid]"
         (exitCode == 0 ? FileHandle.standardOutput : FileHandle.standardError).write(Data((text + "\n").utf8)); exit(exitCode)
     }
 }

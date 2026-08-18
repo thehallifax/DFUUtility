@@ -19,6 +19,10 @@ public struct DFUDevice: Codable, Equatable, Sendable {
         self.identifier = identifier
         self.ecid = ecid
     }
+
+    public var friendlyName: String? {
+        switch model { case "Mac14,2": "MacBook Air M2"; default: nil }
+    }
 }
 
 public struct HostStatus: Equatable, Sendable {
@@ -47,6 +51,7 @@ public enum DFUError: LocalizedError, Equatable {
     case multipleTargets(Int)
     case targetNotInDFU
     case transitionTimedOut
+    case targetChanged(expected: String, actual: String?)
     case invalidIPSW(String)
     case commandFailed(command: String, status: Int32, output: String)
     case privilegeRequired(String)
@@ -59,6 +64,7 @@ public enum DFUError: LocalizedError, Equatable {
         case .multipleTargets(let count): "Found \(count) possible targets. Disconnect all but one target."
         case .targetNotInDFU: "A target is connected, but it is not in DFU mode."
         case .transitionTimedOut: "The target did not appear in DFU mode before the timeout. Check the cable and DFU port."
+        case .targetChanged(let expected, let actual): "A different target appeared after the DFU request (expected ECID \(expected), found \(actual ?? "unknown"))."
         case .invalidIPSW(let reason): "Invalid IPSW: \(reason)"
         case .commandFailed(let command, let status, let output):
             "Command failed (exit \(status)): \(command)\n\(output)"

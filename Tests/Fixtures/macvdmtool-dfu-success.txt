@@ -1,0 +1,3 @@
+Target: Mac14,2
+ECID: 0xTEST000000000001
+VDM DFU request completed.

@@ -1,10 +1,10 @@
 # DFUUtility
 
-Native Swift technical-spike CLI for Apple Silicon Mac DFU transition, Apple IPSW discovery/download, and restore on macOS 14+.
+Native Swift macOS utility for Apple Silicon Mac DFU transition, Apple IPSW discovery/download, revive, and restore on macOS 14+.
 
 ## Native macOS app
 
-Milestone 3 adds a one-window SwiftUI application backed by the same `DFUCore` services as the CLI. It displays target state, loads Apple's live IPSW catalogue, selects current or alternate releases, downloads/resumes/cancels images, validates manually chosen IPSWs, shows shared diagnostics, and exposes carefully gated DFU/revive/restore controls.
+The SwiftUI app detects one target, requests system authorization for DFU through a narrowly scoped service, verifies the ECID transition, selects Apple's current compatible image, reuses validated cache entries, and exposes carefully gated revive and restore controls with stage-local `cfgutil` progress.
 
 Build and launch with Swift Package Manager:
 
@@ -14,7 +14,7 @@ swift build
 swift run DFUUtility
 ```
 
-The package product and executable target are `DFUUtility` and `DFUUtilityApp`, respectively. To open the package in Xcode, run `open Package.swift`, select the `DFUUtility` scheme, and Run. A deterministic development mode never invokes hardware tools:
+Use the packaged application for the real GUI workflow; a raw `swift run` executable cannot register an embedded launch daemon. A deterministic development mode never invokes hardware tools:
 
 ```sh
 DFUUTILITY_DEMO=1 swift run DFUUtility
@@ -22,7 +22,7 @@ DFUUTILITY_DEMO=1 swift run DFUUtility
 swift run DFUUtility --demo
 ```
 
-The app visibly labels demo mode. Its target picker and download animation are synthetic, and mock restore/DFU services never call `cfgutil` or `macvdmtool`.
+The app visibly labels demo mode. Its target picker and download animation are synthetic, and mock services never call `cfgutil`, XPC, or `macvdmtool`.
 
 Safety is invariant across the app: catalogue access, downloads, cache operations, navigation, and manual validation cannot touch a target. Downloading never starts restore. Restore requires a separate click, a validated image, exactly one positively detected real DFU target, production mode, and a native destructive confirmation dialog. Revive requires a real DFU/recovery target.
 
@@ -32,6 +32,8 @@ Create a conventional application bundle containing the DFU helper and license m
 scripts/package-app.sh release
 open .build/app/DFUUtility.app
 ```
+
+Normal use is: connect one target, click **Enter DFU**, approve the standard macOS authorization dialog, download the recommended image if needed, then choose **Revive Mac** or **Restore Mac**. Restore always presents a destructive confirmation. Local operation logs live under `~/Library/Logs/DFUUtility/`.
 
 ## Build and inspect the host
 
@@ -46,7 +48,7 @@ swift build -c release
 
 `doctor` checks architecture, macOS, Apple Configurator, `cfgutil`, the bundled/project-built `macvdmtool`, restore support, cache writability, and target discovery. No attached target is a normal non-fatal result. Users do not install `macvdmtool` separately.
 
-Helper lookup precedence is: application-bundled copy, explicit `DFUCTL_MACVDMTOOL_PATH` development override, SwiftPM-built sibling, `/opt/homebrew/bin`, then `/usr/local/bin`. External copies are developer fallbacks only. The CLI delegates administrator authentication to `/usr/bin/sudo`; it never sees or stores a password. The GUI's production authorization design is documented in [Privileged helper architecture](docs/PRIVILEGED_HELPER.md).
+Helper lookup precedence is: application-bundled copy, explicit `DFUCTL_MACVDMTOOL_PATH` development override, SwiftPM-built sibling, `/opt/homebrew/bin`, then `/usr/local/bin`. External copies are developer fallbacks only. The CLI delegates authentication to `/usr/bin/sudo`; the GUI uses Authorization Services and an `SMAppService` launch daemon over authenticated XPC. Neither path sees or stores a password. See [Privileged helper architecture](docs/PRIVILEGED_HELPER.md).
 
 ## IPSW commands
 
@@ -71,20 +73,34 @@ Completed images and metadata live in `~/Library/Caches/DFUUtility/IPSW/<build>/
 sudo .build/release/dfuctl dfu
 .build/release/dfuctl revive
 .build/release/dfuctl restore /path/to/UniversalMac_Restore.ipsw
+.build/release/dfuctl restore                 # recommended validated cache; confirms
+.build/release/dfuctl restore --download      # explicit download permission; confirms
 ```
 
 `restore` is destructive and runs only when explicitly invoked. Apple Configurator's `cfgutil` is the restore engine; this project does not implement Apple's low-level protocol.
 
+## Hardware validation
+
+Apple Silicon M2 testing on a **MacBook Air M2 (Mac14,2)**, ECID `0x1569301A08C01E`:
+
+- Normal detection: PASS
+- Automated DFU entry and same-ECID verification: PASS
+- DFU detection and revive: PASS
+- Apple IPSW discovery/download/cache: PASS
+- Full restore with macOS 26.6.2 (25G83): PASS
+- Post-restore completion: PASS
+
+Broader Apple Silicon hardware coverage is still required.
+
 ## Current limitations
 
-- DFU detection and revive have been tested on a MacBook Air M2 (Mac14,2). A destructive restore has not been performed.
 - The Apple MobileAsset catalogue is an operational interface and not a versioned public SDK; parsing is fixture-tested and intentionally isolated.
 - Catalogue presence means “currently offered,” not authoritative proof that personalization/signing will succeed for every device. `cfgutil` makes that final determination.
 - Ctrl-C leaves a clearly marked partial. Resume requires a matching HTTP 206 `Content-Range`; otherwise a full fresh download is used.
 - The cache rechecks size and restore manifests when listing/reusing; the authoritative SHA-1 is calculated at download completion because hashing a roughly 20 GB image on every listing would be unnecessarily expensive.
-- Restore event stages are structured, but `cfgutil` exposes primarily textual progress; the app does not invent a percentage. Process-level cancellation for an active `cfgutil` restore is intentionally not presented until it can be hardware-tested safely.
+- Restore stages and stage-local percentages come from real `cfgutil` events; the app does not fabricate an overall percentage. Active restore cancellation is intentionally not presented until hardware-tested safely.
 - Manual IPSW validation confirms archive structure but does not invent version/build metadata when it cannot be read reliably.
-- `scripts/package-app.sh` currently applies an ad-hoc signature for local testing. Developer ID signing, notarization, and a Service Management privileged daemon remain production packaging work.
+- `scripts/package-app.sh` applies consistent ad-hoc signatures and embeds the Service Management daemon for local testing. Distribution still requires Developer ID signing, hardened runtime, notarization/stapling, and testing from a stable application location.
 
 ## Third-party licenses
 
