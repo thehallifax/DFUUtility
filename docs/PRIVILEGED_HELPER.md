@@ -19,7 +19,7 @@ The SwiftUI app never invokes `sudo`. `PrivilegedDFUOperator` registers the embe
 The daemon exports one privileged action, `enterDFU`; its only other method is read-only version/status diagnostics. It:
 
 1. rejects callers whose signed identifier is not `org.dfuutility.app`;
-2. binds ad-hoc development connections to the exact containing app code-directory hash and compares Team ID when available;
+2. in production, requires valid code with the exact app identifier and the containing app's Developer ID Team ID, providing a stable requirement across same-Team upgrades; ad-hoc development connections are instead pinned to the exact containing app code-directory hash;
 3. reconstructs and checks the authorization right inside the privileged process;
 4. resolves the fixed bundled `macvdmtool` path itself and supplies the fixed `dfu` argument;
 5. rejects a writable, non-executable, or invalidly signed tool;

@@ -28,7 +28,7 @@ private struct AppMockDFU: DFUOperating { func enterDFU(timeout: TimeInterval) t
 private struct CancelledDFU: DFUOperating { func enterDFU(timeout: TimeInterval) throws { throw PrivilegedDFUClientError.authorizationCancelled } }
 
 @MainActor private func model(service: AppMockService = AppMockService(), devices: [DFUDevice] = [], validator: AppMockValidator = AppMockValidator(valid: true), cache: IPSWCache = tempCache(), demo: Bool = false) -> AppModel {
-    AppModel(ipswService: service, discovery: AppMockDiscovery(values: devices), cache: cache, validator: validator, diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), isDemoMode: demo)
+    AppModel(ipswService: service, discovery: AppMockDiscovery(values: devices), cache: cache, validator: validator, diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), requiresPrivilegedHelperSetup: false, isDemoMode: demo)
 }
 
 @Test @MainActor func catalogueLoadsAndSelectsLatest() async {
@@ -55,7 +55,7 @@ private struct CancelledDFU: DFUOperating { func enterDFU(timeout: TimeInterval)
 }
 
 @Test @MainActor func activeDownloadTaskCancelsCleanly() async throws {
-    let app = AppModel(ipswService: DemoIPSWService(), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), isDemoMode: true)
+    let app = AppModel(ipswService: DemoIPSWService(), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), requiresPrivilegedHelperSetup: false, isDemoMode: true)
     await app.load(); app.beginDownload(); try await Task.sleep(for: .milliseconds(180)); app.cancelDownload(); try await Task.sleep(for: .milliseconds(180))
     #expect(app.downloadState == .cancelled); #expect(app.imageURL == nil)
 }
@@ -94,7 +94,7 @@ private struct CancelledDFU: DFUOperating { func enterDFU(timeout: TimeInterval)
 
 @Test @MainActor func guiAuthorizationCancellationLeavesAppUsable() async {
     let target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "TEST")
-    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: CancelledDFU())
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: CancelledDFU(), requiresPrivilegedHelperSetup: false)
     await app.refreshDiagnosticsAndTarget(); #expect(app.canEnterDFU)
     await app.enterDFU()
     #expect(app.presentedError == "Administrator authorization was cancelled.")

@@ -16,6 +16,10 @@ struct DFUUtilityApplication: App {
     @StateObject private var model: AppModel
 
     init() {
+        if CommandLine.arguments.contains("--unregister-helper") {
+            do { try PrivilegedDFUClient().unregister(); print("Privileged helper unregistered."); exit(0) }
+            catch { FileHandle.standardError.write(Data("Failed to unregister privileged helper: \(error.localizedDescription)\n".utf8)); exit(1) }
+        }
         let demo = ProcessInfo.processInfo.environment["DFUUTILITY_DEMO"] == "1" || CommandLine.arguments.contains("--demo")
         if demo {
             let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Demo-Cache"))

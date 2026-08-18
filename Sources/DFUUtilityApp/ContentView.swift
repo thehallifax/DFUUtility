@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showVersions = false
     @State private var showImporter = false
     @State private var showDiagnostics = false
+    @State private var showAbout = false
     @State private var confirmRestore = false
     @State private var demoTarget = "None"
 
@@ -19,6 +20,7 @@ struct ContentView: View {
                 Spacer()
                 if model.isDemoMode { Text("DEMO MODE — NO HARDWARE ACTIONS").font(.caption.bold()).foregroundStyle(.orange).padding(7).background(.orange.opacity(0.12), in: Capsule()) }
                 Button("Diagnostics…") { showDiagnostics = true }
+                Button("About…") { showAbout = true }
             }
             targetCard
             Divider()
@@ -29,6 +31,7 @@ struct ContentView: View {
         .task { await model.load() }
         .sheet(isPresented: $showVersions) { VersionPicker(model: model, isPresented: $showVersions) }
         .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, helperState: model.privilegedHelperState).frame(minWidth: 480, minHeight: 430).padding() }
+        .sheet(isPresented: $showAbout) { AboutView().frame(minWidth: 520, minHeight: 420).padding() }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [UTType(filenameExtension: "ipsw") ?? .data], allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first { Task { let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; await model.validateManualIPSW(url) } }
         }
@@ -61,10 +64,24 @@ struct ContentView: View {
                     Button("Revive Mac") { model.revive() }.disabled(!model.canRevive)
                     Button("Refresh") { Task { await model.refreshDiagnosticsAndTarget() } }
                 }
+                if !model.isDemoMode && !model.privilegedHelperState.isReady { helperSetup }
                 if model.doctorReport?.status.host.macVDMToolPath == nil { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
-                else if model.privilegedHelperState == .notRegistered { Text("macOS will request administrator authorization and register the privileged DFU helper when needed.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label("Target Mac", systemImage: "desktopcomputer") }
+    }
+
+    @ViewBuilder private var helperSetup: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("DFU Setup Required").font(.headline)
+            Text("DFUUtility needs permission to install its privileged DFU helper. This helper is used only to place a connected Mac into DFU mode.").font(.caption).foregroundStyle(.secondary)
+            Text(model.privilegedHelperState.description).font(.caption)
+            HStack {
+                Button(model.privilegedHelperState == .awaitingApproval ? "Check Again" : "Set Up DFU Helper") { Task { await model.setUpPrivilegedHelper() } }
+                if model.privilegedHelperState == .awaitingApproval {
+                    Button("Open System Settings") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!) }
+                }
+            }
+        }.padding(10).background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var restoreCard: some View {
