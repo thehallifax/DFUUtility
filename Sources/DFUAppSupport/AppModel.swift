@@ -7,10 +7,82 @@ public enum ImageState: Equatable { case none, partial(Int64), validating, ready
 public enum AppDownloadState: Equatable { case idle, downloading(completed: Int64, total: Int64?, bytesPerSecond: Double?), validating, cancelled, failed(String) }
 public enum AppRestoreState: Equatable {
     case idle
-    case running(operation: String, stage: String, fraction: Double?)
+    case running(operation: String, stage: String, stageIndex: Int?, stageTotal: Int?, fraction: Double?)
     case reconnecting(operation: String)
     case completed(String)
     case failed(String)
+}
+
+public enum OperationProgressReducer {
+    public static func reduce(_ current: AppRestoreState, event: RestoreEvent, operation: String) -> AppRestoreState {
+        switch event {
+        case .preparing:
+            return .running(operation: operation, stage: "Preparing", stageIndex: nil, stageTotal: nil, fraction: nil)
+        case .waitingForDevice:
+            return .running(operation: operation, stage: "Waiting for the device", stageIndex: nil, stageTotal: nil, fraction: nil)
+        case .stageStarted(let name, let index, let total):
+            return .running(operation: operation, stage: normalizeStageName(name), stageIndex: index, stageTotal: total, fraction: nil)
+        case .progress(let stage, let fraction):
+            let name = normalizeStageName(stage)
+            let metadata: (Int?, Int?)
+            if case .running(_, let currentStage, let index, let total, _) = current, normalizeStageName(currentStage) == name { metadata = (index, total) }
+            else { metadata = (nil, nil) }
+            return .running(operation: operation, stage: name, stageIndex: metadata.0, stageTotal: metadata.1, fraction: fraction >= 0 ? min(max(fraction, 0), 1) : nil)
+        case .stageCompleted(let name):
+            let cleanName = normalizeStageName(name)
+            let metadata: (Int?, Int?)
+            if case .running(_, let currentStage, let index, let total, _) = current, normalizeStageName(currentStage) == cleanName { metadata = (index, total) }
+            else { metadata = (nil, nil) }
+            return .running(operation: operation, stage: cleanName, stageIndex: metadata.0, stageTotal: metadata.1, fraction: 1)
+        case .message:
+            return current // Raw cfgutil messages remain in the operation log.
+        case .reconnecting, .completed:
+            return .reconnecting(operation: operation)
+        case .failed(let message):
+            return .failed(message)
+        }
+    }
+
+    public static func normalizeStageName(_ value: String) -> String {
+        value.replacingOccurrences(of: #"^Step\s+\d+\s+of\s+\d+:\s*"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+public struct OperationProgressPresentation: Equatable, Sendable {
+    public enum Phase: Equatable, Sendable { case hidden, active, reconnecting, completed, failed }
+    public let phase: Phase
+    public let operation: String?
+    public let title: String?
+    public let stage: String?
+    public let fraction: Double?
+    public let message: String?
+
+    public init(state: AppRestoreState, macOSVersion: String? = nil) {
+        switch state {
+        case .idle:
+            phase = .hidden; operation = nil; title = nil; stage = nil; fraction = nil; message = nil
+        case .running(let operationName, let stageName, let index, let total, let value):
+            phase = .active; operation = operationName; title = Self.title(operation: operationName, version: macOSVersion)
+            let clean = OperationProgressReducer.normalizeStageName(stageName)
+            stage = if let index, let total { "\(clean) — Step \(index) of \(total)" } else { clean }
+            fraction = value.flatMap { $0 >= 0 ? min(max($0, 0), 1) : nil }; message = nil
+        case .reconnecting(let operationName):
+            phase = .reconnecting; operation = operationName; title = "\(operationName) completed"; stage = "Waiting for Mac to restart…"; fraction = nil; message = nil
+        case .completed(let value):
+            phase = .completed; operation = nil; title = nil; stage = nil; fraction = nil; message = value
+        case .failed(let value):
+            phase = .failed; operation = nil; title = nil; stage = nil; fraction = nil; message = value
+        }
+    }
+
+    private static func title(operation: String, version: String?) -> String {
+        switch operation {
+        case "Restore": version.map { "Restoring macOS \($0)" } ?? "Restoring macOS"
+        case "Revive": "Reviving Mac"
+        default: operation
+        }
+    }
 }
 public enum TargetWorkflowState: String, Equatable, Sendable { case noTarget = "No target", normal = "Normal", transitioning = "Transitioning to DFU", dfu = "DFU", recovery = "Recovery", restoring = "Restoring", reviving = "Reviving", reconnecting = "Reconnecting", completed = "Completed", failed = "Failed" }
 
@@ -60,7 +132,7 @@ public final class AppModel: ObservableObject {
     public var target: DFUDevice? { targetDevices.count == 1 ? targetDevices[0] : nil }
     public var targetWorkflowState: TargetWorkflowState {
         switch restoreState {
-        case .running(let operation, _, _): if operation == "Enter DFU" { return .transitioning }; return operation == "Restore" ? .restoring : .reviving
+        case .running(let operation, _, _, _, _): if operation == "Enter DFU" { return .transitioning }; return operation == "Restore" ? .restoring : .reviving
         case .reconnecting: return .reconnecting
         case .completed: return .completed
         case .failed: return .failed
@@ -165,7 +237,7 @@ public final class AppModel: ObservableObject {
         guard canEnterDFU else { presentedError = "macvdmtool is not installed or DFU is unavailable."; return }
         let log = try? operationLogger.start(operation: "Enter DFU", target: target, release: nil)
         lastLogURL = log
-        restoreState = .running(operation: "Enter DFU", stage: "Requesting administrator authorization…", fraction: nil)
+        restoreState = .running(operation: "Enter DFU", stage: "Requesting administrator authorization…", stageIndex: nil, stageTotal: nil, fraction: nil)
         do {
             if let log { try? operationLogger.append("Privilege mode: \(privilegeMode.displayName)\nAuthorization requested via \(privilegeMode == .community ? "macOS system administrator prompt" : "signed helper")", to: log) }
             let controller = dfuController; try await Task.detached { try controller.enterDFU(timeout: 30) }.value
@@ -186,21 +258,12 @@ public final class AppModel: ObservableObject {
             do {
                 for try await event in restoreEngine.events(for: action) {
                     if let log { try? operationLogger.append(String(describing: event), to: log) }
-                    switch event {
-                    case .preparing: restoreState = .running(operation: action.operationName, stage: "Preparing…", fraction: nil)
-                    case .waitingForDevice: restoreState = .running(operation: action.operationName, stage: "Waiting for the device", fraction: nil)
-                    case .stageStarted(let name, _, _): restoreState = .running(operation: action.operationName, stage: name, fraction: nil)
-                    case .progress(let stage, let fraction): restoreState = .running(operation: action.operationName, stage: stage, fraction: fraction)
-                    case .stageCompleted(let name): restoreState = .running(operation: action.operationName, stage: name, fraction: 1)
-                    case .message(let text): restoreState = .running(operation: action.operationName, stage: text, fraction: nil)
-                    case .reconnecting: restoreState = .reconnecting(operation: action.operationName)
-                    case .completed:
-                        restoreState = .reconnecting(operation: action.operationName)
+                    restoreState = OperationProgressReducer.reduce(restoreState, event: event, operation: action.operationName)
+                    if case .completed = event {
                         await verifyReconnect(operation: action.operationName)
-                    case .failed(let message): restoreState = .failed(message)
                     }
                 }
-            } catch { if let log { try? operationLogger.append("FAILED: \(error.localizedDescription)", to: log) }; restoreState = .failed(error.localizedDescription); presentedError = "Restore failed.\n\(error.localizedDescription)" }
+            } catch { if let log { try? operationLogger.append("FAILED: \(error.localizedDescription)", to: log) }; restoreState = .failed(error.localizedDescription); presentedError = "\(action.operationName) failed.\n\(error.localizedDescription)" }
         }
     }
 

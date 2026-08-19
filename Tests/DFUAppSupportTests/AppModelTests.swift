@@ -154,3 +154,52 @@ private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscoverin
     #expect(await ReconnectVerifier(discovery: AppMockDiscovery(values: [normal])).wait(attempts: 1, interval: .zero) == .restarted(normal))
     #expect(await ReconnectVerifier(discovery: AppMockDiscovery(values: [])).wait(attempts: 1, interval: .zero) == .unverified)
 }
+
+@Test func operationProgressWaitingIsIndeterminate() {
+    let state = OperationProgressReducer.reduce(.idle, event: .waitingForDevice, operation: "Restore")
+    let value = OperationProgressPresentation(state: state, macOSVersion: "26.6.2")
+    #expect(value.phase == .active); #expect(value.title == "Restoring macOS 26.6.2")
+    #expect(value.stage == "Waiting for the device"); #expect(value.fraction == nil)
+}
+
+@Test func operationProgressNormalizesStageAndRetainsStepMetadata() {
+    let state = OperationProgressReducer.reduce(.idle, event: .stageStarted(name: "Step 2 of 2: Installing System", index: 2, total: 2), operation: "Restore")
+    let value = OperationProgressPresentation(state: state)
+    #expect(value.stage == "Installing System — Step 2 of 2")
+    #expect(value.fraction == nil)
+}
+
+@Test func operationProgressIsStageLocalClampedAndReset() {
+    var state = OperationProgressReducer.reduce(.idle, event: .stageStarted(name: "Installing System", index: 1, total: 2), operation: "Restore")
+    state = OperationProgressReducer.reduce(state, event: .progress(stage: "Installing System", fraction: 0.495), operation: "Restore")
+    #expect(OperationProgressPresentation(state: state).fraction == 0.495)
+    state = OperationProgressReducer.reduce(state, event: .stageStarted(name: "Finishing", index: 2, total: 2), operation: "Restore")
+    #expect(OperationProgressPresentation(state: state).fraction == nil)
+    state = OperationProgressReducer.reduce(state, event: .progress(stage: "Finishing", fraction: 4), operation: "Restore")
+    #expect(OperationProgressPresentation(state: state).fraction == 1)
+}
+
+@Test func operationProgressSuppressesSentinelAndRawMessages() {
+    var state = OperationProgressReducer.reduce(.idle, event: .stageStarted(name: "Unzipping System", index: nil, total: nil), operation: "Revive")
+    let beforeMessage = state
+    state = OperationProgressReducer.reduce(state, event: .message("cfgutil: revive: target OS is 26.6.2"), operation: "Revive")
+    #expect(state == beforeMessage)
+    state = OperationProgressReducer.reduce(state, event: .progress(stage: "Unzipping System", fraction: -1), operation: "Revive")
+    #expect(OperationProgressPresentation(state: state).fraction == nil)
+}
+
+@Test func operationProgressReconnectCompletionAndFailureStates() {
+    let reconnecting = OperationProgressPresentation(state: .reconnecting(operation: "Restore"))
+    #expect(reconnecting.phase == .reconnecting); #expect(reconnecting.title == "Restore completed")
+    let completed = OperationProgressPresentation(state: .completed("Restore completed successfully."))
+    #expect(completed.phase == .completed); #expect(completed.message == "Restore completed successfully.")
+    let failed = OperationProgressPresentation(state: .failed("Cable disconnected."))
+    #expect(failed.phase == .failed); #expect(failed.message == "Cable disconnected.")
+}
+
+@Test func reviveAndRestoreShareProgressPresentationModel() {
+    let restore = OperationProgressPresentation(state: .running(operation: "Restore", stage: "Installing System", stageIndex: nil, stageTotal: nil, fraction: 0.49), macOSVersion: "26.6.2")
+    let revive = OperationProgressPresentation(state: .running(operation: "Revive", stage: "Unzipping System", stageIndex: nil, stageTotal: nil, fraction: 0.34))
+    #expect(restore.title == "Restoring macOS 26.6.2"); #expect(restore.fraction == 0.49)
+    #expect(revive.title == "Reviving Mac"); #expect(revive.fraction == 0.34)
+}
