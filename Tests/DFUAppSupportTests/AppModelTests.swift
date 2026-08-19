@@ -16,6 +16,35 @@ private struct AppMockService: IPSWService {
     func download(_ release: IPSWRelease, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws -> URL { testURL }
     func downloadEvents(_ release: IPSWRelease) -> AsyncThrowingStream<DownloadEvent, Error> { AsyncThrowingStream { continuation in events.forEach { continuation.yield($0) }; continuation.finish() } }
 }
+private final class TrackingIPSWService: @unchecked Sendable, IPSWService {
+    private let lock = NSLock()
+    let releases: [IPSWRelease], events: [DownloadEvent]
+    private(set) var eventRequests = 0
+    init(releases: [IPSWRelease], events: [DownloadEvent] = []) { self.releases = releases; self.events = events }
+    func availableImages(for device: DFUDevice?) async throws -> [IPSWRelease] { AppleIPSWService.sortNewestFirst(releases) }
+    func recommendedImage(for device: DFUDevice?) async throws -> IPSWRelease { releases[0] }
+    func download(_ release: IPSWRelease, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws -> URL { testURL }
+    func downloadEvents(_ release: IPSWRelease) -> AsyncThrowingStream<DownloadEvent, Error> {
+        lock.withLock { eventRequests += 1 }
+        return AsyncThrowingStream { continuation in events.forEach { continuation.yield($0) }; continuation.finish() }
+    }
+}
+private struct DelayedDownloadService: IPSWService {
+    let release: IPSWRelease
+    func availableImages(for device: DFUDevice?) async throws -> [IPSWRelease] { [release] }
+    func recommendedImage(for device: DFUDevice?) async throws -> IPSWRelease { release }
+    func download(_ release: IPSWRelease, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws -> URL { testURL }
+    func downloadEvents(_ release: IPSWRelease) -> AsyncThrowingStream<DownloadEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                continuation.yield(.started(release: release)); continuation.yield(.progress(completed: 50, total: 100, bytesPerSecond: 20))
+                try? await Task.sleep(for: .milliseconds(250)); continuation.yield(.validating)
+                try? await Task.sleep(for: .milliseconds(50)); continuation.yield(.completed(url: testURL)); continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
 private struct AppMockDiscovery: DeviceDiscovering { let values: [DFUDevice]; func devices() throws -> [DFUDevice] { values } }
 private struct AppMockValidator: IPSWValidating { let valid: Bool; func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { if !valid { throw DFUError.invalidIPSW("mock invalid") } } }
 private struct AppMockDiagnostics: DiagnosticsProviding {
@@ -44,6 +73,80 @@ private let noOpLogger = AppMockLogger()
 
 @Test @MainActor func selectingAnotherReleaseUpdatesSelection() async {
     let older = makeRelease("26.6", "25G70"), app = model(service: AppMockService(releases: [makeRelease(), older])); await app.load(); app.selectRelease(older); #expect(app.selectedRelease == older)
+}
+
+@Test @MainActor func chooserLoadsSortedRecommendedReleaseWithoutDownloading() async {
+    let latest = makeRelease("26.6.2", "25G83"), older = makeRelease("26.6", "25G70")
+    let service = TrackingIPSWService(releases: [older, latest]), app = AppModel(ipswService: service, discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load()
+    #expect(app.imageChoices.map(\.release.build) == ["25G83", "25G70"])
+    #expect(app.imageChoices.first?.isRecommended == true); #expect(app.selectedRelease == latest)
+    app.beginChoosingVersion(); app.choosePendingRelease(older)
+    #expect(app.selectedRelease == latest); #expect(service.eventRequests == 0)
+    app.confirmPendingRelease()
+    #expect(app.selectedRelease == older); #expect(service.eventRequests == 0); #expect(app.restoreState == .idle)
+}
+
+@Test @MainActor func chooserReportsDownloadedRequiredAndPartialCacheStates() async throws {
+    let downloaded = makeRelease("26.6.2", "25G83"), partial = makeRelease("26.6.1", "25G76"), required = makeRelease("26.6", "25G70")
+    let cache = tempCache(); try cache.prepare()
+    let staged = cache.partialURL(for: downloaded); try Data("valid".utf8).write(to: staged); _ = try cache.commit(partial: staged, release: downloaded)
+    try Data("partial bytes".utf8).write(to: cache.partialURL(for: partial))
+    let app = model(service: AppMockService(releases: [required, partial, downloaded]), cache: cache)
+    await app.load()
+    #expect(app.choice(for: downloaded)?.cacheState == .downloaded(cache.destination(for: downloaded)))
+    #expect(app.choice(for: partial)?.cacheState == .partial(13))
+    #expect(app.choice(for: required)?.cacheState == .downloadRequired)
+    #expect(app.choice(for: downloaded)?.compatibility == .universalAppleSilicon)
+}
+
+@Test @MainActor func chooserUsesCatalogueCompatibilityWithoutFabricatingMatches() async {
+    let compatible = IPSWRelease(version: "26.6.2", build: "MATCH", downloadURL: URL(string: "https://updates.cdn-apple.com/match.ipsw")!, supportedDevices: ["Mac14,2"])
+    let other = IPSWRelease(version: "26.6.1", build: "OTHER", downloadURL: URL(string: "https://updates.cdn-apple.com/other.ipsw")!, supportedDevices: ["Mac15,3"])
+    let target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let app = model(service: AppMockService(releases: [other, compatible]), devices: [target])
+    await app.load()
+    #expect(app.imageChoices.map(\.release.build) == ["MATCH"])
+    #expect(app.imageChoices.first?.compatibility == .compatible(model: "Mac14,2"))
+}
+
+@Test @MainActor func liveDownloadProgressIsVisibleBeforeValidation() async throws {
+    let release = makeRelease(), app = AppModel(ipswService: DelayedDownloadService(release: release), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load(); app.beginDownload(); try await Task.sleep(for: .milliseconds(40))
+    #expect(app.downloadPresentation?.fraction == 0.5); #expect(app.downloadPresentation?.bytesPerSecond == 20)
+    try await Task.sleep(for: .milliseconds(320)); #expect(app.imageState == .ready(testURL))
+}
+
+@Test @MainActor func cancelledDownloadReturnsToResumablePartialState() async throws {
+    let release = makeRelease(), cache = tempCache(); try cache.prepare(); try Data("resume".utf8).write(to: cache.partialURL(for: release))
+    let app = model(service: AppMockService(releases: [release], events: [.started(release: release), .resumed(existingBytes: 6), .cancelled]), cache: cache)
+    await app.load(); await app.downloadSelected()
+    #expect(app.downloadState == .cancelled); #expect(app.imageState == .partial(6)); #expect(app.choice(for: release)?.cacheState == .partial(6))
+}
+
+@Test @MainActor func downloadActionUsesExistingEventPipelineOnlyWhenRequested() async throws {
+    let release = makeRelease(), service = TrackingIPSWService(releases: [release], events: [.started(release: release), .progress(completed: 40, total: 100, bytesPerSecond: 12), .validating, .completed(url: testURL)])
+    let app = AppModel(ipswService: service, discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load(); #expect(service.eventRequests == 0)
+    app.beginDownload(); try await Task.sleep(for: .milliseconds(50))
+    #expect(service.eventRequests == 1); #expect(app.imageState == .ready(testURL)); #expect(app.downloadState == .idle)
+}
+
+@Test @MainActor func offlineCatalogueRetainsValidatedCachedImage() async throws {
+    let release = makeRelease(), cache = tempCache(); try cache.prepare()
+    let staged = cache.partialURL(for: release); try Data("valid".utf8).write(to: staged); let ready = try cache.commit(partial: staged, release: release)
+    let app = model(service: AppMockService(releases: [], failure: "offline"), cache: cache)
+    await app.load()
+    #expect(app.catalogueErrorMessage?.contains("could not be reached") == true)
+    #expect(app.selectedRelease == release); #expect(app.imageState == .ready(ready)); #expect(app.canRestore == false)
+}
+
+@Test @MainActor func invalidCachedImageIsNotReady() async throws {
+    let release = makeRelease(), cache = tempCache(); try cache.prepare()
+    let staged = cache.partialURL(for: release); try Data("bad".utf8).write(to: staged); _ = try cache.commit(partial: staged, release: release)
+    let app = model(service: AppMockService(releases: [release]), validator: AppMockValidator(valid: false), cache: cache)
+    await app.load()
+    #expect(app.choice(for: release)?.cacheState == .invalid); #expect(app.imageURL == nil); #expect(!app.canRestore)
 }
 
 @Test @MainActor func cacheStatePropagatesToReady() async throws {
@@ -102,7 +205,7 @@ private let noOpLogger = AppMockLogger()
 }
 
 @Test @MainActor func catalogueErrorIsActionable() async {
-    let app = model(service: AppMockService(failure: "offline")); await app.load(); if case .failed = app.catalogueState {} else { Issue.record("Expected failed catalogue") }; #expect(app.presentedError?.contains("could not be reached") == true)
+    let app = model(service: AppMockService(failure: "offline")); await app.load(); if case .failed = app.catalogueState {} else { Issue.record("Expected failed catalogue") }; #expect(app.presentedError?.contains("Unable to load Apple restore images") == true); #expect(app.catalogueErrorMessage?.contains("could not be reached") == true)
 }
 
 @Test @MainActor func guiAuthorizationCancellationLeavesAppUsable() async {
