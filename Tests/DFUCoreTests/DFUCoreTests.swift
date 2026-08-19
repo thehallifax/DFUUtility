@@ -102,6 +102,66 @@ private func executableFile(in directory: URL, name: String = "macvdmtool", exec
     try FileManager.default.setAttributes([.posixPermissions: executable ? 0o755 : 0o644], ofItemAtPath: url.path); return url
 }
 
+private final class CapturingRunner: @unchecked Sendable, CommandRunning {
+    private let lock = NSLock()
+    let result: CommandResult
+    private(set) var calls: [(URL, [String])] = []
+    init(status: Int32 = 0, output: String = "") { result = CommandResult(status: status, stdout: Data(), stderr: Data(output.utf8)) }
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult { lock.withLock { calls.append((executable, arguments)) }; return result }
+}
+
+private struct ThrowingRunner: CommandRunning {
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult { throw CocoaError(.executableNotLoadable) }
+}
+
+@Test func signingCapabilitySelectsPrivilegeMode() {
+    let adHoc = CodeSignatureInfo(identifier: PrivilegedDFUConstants.appIdentifier, teamIdentifier: nil, isValid: true, hardenedRuntime: false)
+    let signedApp = CodeSignatureInfo(identifier: PrivilegedDFUConstants.appIdentifier, teamIdentifier: "TEAM", isValid: true, hardenedRuntime: true)
+    let signedHelper = CodeSignatureInfo(identifier: PrivilegedDFUConstants.machService, teamIdentifier: "TEAM", isValid: true, hardenedRuntime: true)
+    let invalidHelper = CodeSignatureInfo(identifier: PrivilegedDFUConstants.machService, teamIdentifier: "TEAM", isValid: false, hardenedRuntime: true)
+    #expect(PrivilegeModeSelector.select(app: adHoc, helper: adHoc) == .community)
+    #expect(PrivilegeModeSelector.select(app: signedApp, helper: signedHelper) == .signedHelper)
+    #expect(PrivilegeModeSelector.select(app: signedApp, helper: adHoc) == .community)
+    #expect(PrivilegeModeSelector.select(app: signedApp, helper: invalidHelper) == .community)
+}
+
+@Test func communityRequestInvokesOnlyOsascriptAndFixedDFUOperation() throws {
+    let root = try temporaryDirectory(), tool = try executableFile(in: root.appendingPathComponent("odd ' quote $ directory"))
+    let runner = CapturingRunner()
+    try CommunityDFURequest(runner: runner, tool: tool).enterDFU()
+    #expect(runner.calls.count == 1)
+    #expect(runner.calls[0].0 == CommunityDFURequest.osascriptURL)
+    #expect(runner.calls[0].1.count == 2 && runner.calls[0].1[0] == "-e")
+    let script = runner.calls[0].1[1]
+    #expect(script == CommunityDFURequest.appleScript(tool: tool))
+    #expect(CommunityDFURequest.posixShellQuote(tool.path).contains("'\\''"))
+    #expect(script.hasSuffix(" dfu\" with administrator privileges"))
+}
+
+@Test func communityToolResolutionExcludesOverridesAndExternalCopies() throws {
+    let root = try temporaryDirectory(), project = root.appendingPathComponent("project"), external = root.appendingPathComponent("external")
+    let helper = try executableFile(in: project), override = try executableFile(in: external)
+    let result = ToolLocator.communityMacVDMTool(bundleURL: nil, bundleResourceURL: nil, executableURL: project.appendingPathComponent("DFUUtility"))
+    #expect(result == ToolResolution(url: helper, source: .projectBuild))
+    #expect(result?.url != override)
+}
+
+@Test func communityAuthorizationErrorsRemainDistinct() throws {
+    let tool = try executableFile(in: try temporaryDirectory())
+    #expect(throws: CommunityDFUError.authorizationCancelled) { try CommunityDFURequest(runner: CapturingRunner(status: 1, output: "execution error: User canceled. (-128)"), tool: tool).enterDFU() }
+    #expect(throws: CommunityDFUError.authorizationFailed("execution error: Not authorized. (-60007)")) { try CommunityDFURequest(runner: CapturingRunner(status: 1, output: "execution error: Not authorized. (-60007)"), tool: tool).enterDFU() }
+    #expect(throws: CommunityDFUError.transitionFailed("macvdmtool: device not found")) { try CommunityDFURequest(runner: CapturingRunner(status: 1, output: "macvdmtool: device not found"), tool: tool).enterDFU() }
+    #expect(throws: CommunityDFUError.self) { try CommunityDFURequest(runner: ThrowingRunner(), tool: tool).enterDFU() }
+}
+
+@Test func communityDiagnosticsDoNotRequireHelperRegistration() {
+    let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .community, helperState: .notRegistered, appURL: URL(fileURLWithPath: "/missing.app"))
+    #expect(text.contains("Privilege mode: Community"))
+    #expect(text.contains("GUI DFU authorization: System administrator prompt"))
+    #expect(text.contains("Privileged helper: Not required"))
+    #expect(!text.contains("Helper registration: Not registered"))
+}
+
 @Test func bundledHelperIsPreferred() throws {
     let root = try temporaryDirectory(), resources = root.appendingPathComponent("Resources"), bin = root.appendingPathComponent("bin")
     let bundled = try executableFile(in: resources), override = try executableFile(in: bin, name: "override")
@@ -236,6 +296,44 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     #expect(!CallerIdentityPolicy.permits(CallerIdentity(identifier: "org.dfuutility.app", teamIdentifier: "OTHER"), helper: helper, developmentAdHoc: false))
 }
 
+@Test func developmentCallerRequiresExactAdHocCodeHash() {
+    let caller = CallerIdentity(identifier: PrivilegedDFUConstants.appIdentifier, teamIdentifier: nil)
+    let hash = Data([1, 2, 3])
+    #expect(CallerValidationPolicy.permits(caller: caller, expectedTeam: nil, callerHash: hash, expectedHash: hash))
+    #expect(!CallerValidationPolicy.permits(caller: caller, expectedTeam: nil, callerHash: hash, expectedHash: Data([9])))
+    #expect(!CallerValidationPolicy.permits(caller: CallerIdentity(identifier: "org.attacker", teamIdentifier: nil), expectedTeam: nil, callerHash: hash, expectedHash: hash))
+}
+
+@Test func productionCallerRequiresMatchingTeamEvenWithHash() {
+    let hash = Data([1])
+    #expect(CallerValidationPolicy.permits(caller: CallerIdentity(identifier: PrivilegedDFUConstants.appIdentifier, teamIdentifier: "TEAM"), expectedTeam: "TEAM", callerHash: hash, expectedHash: hash))
+    #expect(!CallerValidationPolicy.permits(caller: CallerIdentity(identifier: PrivilegedDFUConstants.appIdentifier, teamIdentifier: "OTHER"), expectedTeam: "TEAM", callerHash: hash, expectedHash: hash))
+}
+
+@Test func helperLayoutUsesAbsoluteExecutableRatherThanRelativeArgv() {
+    let helper = URL(fileURLWithPath: "/Applications/DFUUtility.app/Contents/Library/LaunchServices/DFUPrivilegedHelper")
+    #expect(PrivilegedHelperLayout.containingAppURL(for: helper)?.path == "/Applications/DFUUtility.app")
+    #expect(PrivilegedHelperLayout.bundledToolURL(for: helper)?.path == "/Applications/DFUUtility.app/Contents/Resources/macvdmtool")
+    #expect(PrivilegedHelperLayout.containingAppURL(for: URL(fileURLWithPath: "/DFUPrivilegedHelper")) == nil)
+}
+
+@Test func launchDaemonIdentifiersMatchRuntimeConstants() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let plistURL = root.appendingPathComponent("Packaging/org.dfuutility.privileged-helper.plist")
+    let data = try Data(contentsOf: plistURL), plist = try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+    #expect(plist["Label"] as? String == PrivilegedDFUConstants.machService)
+    #expect(plist["BundleProgram"] as? String == PrivilegedDFUConstants.helperBundleProgram)
+    let services = try #require(plist["MachServices"] as? [String: Bool]); #expect(services == [PrivilegedDFUConstants.machService: true])
+    #expect(plist["AssociatedBundleIdentifiers"] as? [String] == [PrivilegedDFUConstants.appIdentifier])
+}
+
+@Test func helperConnectionFailuresNeverMasqueradeAsAuthorizationCancellation() {
+    #expect(PrivilegedDFUClientError.authorizationCancelled.localizedDescription == "Administrator authorization was cancelled.")
+    #expect(!PrivilegedDFUClientError.connectionInterrupted.localizedDescription.localizedCaseInsensitiveContains("cancelled"))
+    #expect(!PrivilegedDFUClientError.connectionInvalidated.localizedDescription.localizedCaseInsensitiveContains("cancelled"))
+    #expect(!PrivilegedDFUClientError.callerRejected.localizedDescription.localizedCaseInsensitiveContains("cancelled"))
+}
+
 @Test func privilegedXPCSurfaceHasNoCommandOrPathParameters() {
     // The request selector contains only authorization and reply; no caller-
     // controlled executable, command, or argument crosses the boundary.
@@ -252,6 +350,7 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     #expect(HelperStateResolver.resolve(registration: .notRegistered) == .notRegistered)
     #expect(HelperStateResolver.resolve(registration: .registrationRequested) == .registrationRequested)
     #expect(HelperStateResolver.resolve(registration: .awaitingApproval) == .awaitingApproval)
+    #expect(HelperStateResolver.resolve(registration: .enabled) == .registered)
     #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 0) == .upgradeRequired(installedProtocol: 0))
     #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 2) == .incompatibleNewer(installedProtocol: 2))
     #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 1, version: "0.4.0") == .running(version: "0.4.0", protocolVersion: 1))
@@ -261,8 +360,17 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
 @Test func buildVersionAndDiagnosticsMetadataPropagate() throws {
     #expect(BuildMetadata.displayVersion == "0.4.0 (1)")
     #expect(BuildMetadata.helperProtocolVersion == 1)
-    let text = AcceptanceDiagnostics.render(report: nil, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
-    #expect(text.contains("App version: 0.4.0 (1)")); #expect(text.contains("Helper upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+    let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .signedHelper, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
+    #expect(text.contains("App version: 0.4.0 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+    #expect(text.contains("Helper registration signing: Unsupported"))
+}
+
+@Test func registrationFailureRetainsSanitizedTechnicalDetails() {
+    let detail = "SMAppServiceErrorDomain code 1: Operation not permitted"
+    let error = PrivilegedDFUClientError.registrationFailed(detail)
+    #expect(error.localizedDescription.contains("See Diagnostics"))
+    if case .registrationFailed(let retained) = error { #expect(retained == detail) }
+    else { Issue.record("Expected registration failure") }
 }
 
 @Test func packagingScriptRejectsUnknownArgumentsBeforeBuilding() throws {
@@ -270,6 +378,18 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = [root.appendingPathComponent("scripts/package-app.sh").path, "--unknown"]
     process.standardOutput = Pipe(); process.standardError = Pipe(); try process.run(); process.waitUntilExit()
     #expect(process.terminationStatus == 64)
+}
+
+@Test func localInstallScriptValidatesArgumentsAndDestination() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let script = root.appendingPathComponent("scripts/install-local.sh")
+    let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = [script.path, "--unknown"]
+    process.standardOutput = Pipe(); process.standardError = Pipe(); try process.run(); process.waitUntilExit()
+    #expect(process.terminationStatus == 64)
+    let text = try String(contentsOf: script, encoding: .utf8)
+    #expect(text.contains("/Applications/DFUUtility.app"))
+    #expect(text.contains("scripts/package-app.sh release"))
+    #expect(text.contains("scripts/verify-app.sh"))
 }
 
 private func releaseLibrary(_ command: String) throws -> (Int32, String) {

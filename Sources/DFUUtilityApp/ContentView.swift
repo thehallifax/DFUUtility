@@ -30,7 +30,7 @@ struct ContentView: View {
         .padding(24)
         .task { await model.load() }
         .sheet(isPresented: $showVersions) { VersionPicker(model: model, isPresented: $showVersions) }
-        .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, helperState: model.privilegedHelperState).frame(minWidth: 480, minHeight: 430).padding() }
+        .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails).frame(minWidth: 480, minHeight: 430).padding() }
         .sheet(isPresented: $showAbout) { AboutView().frame(minWidth: 520, minHeight: 420).padding() }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [UTType(filenameExtension: "ipsw") ?? .data], allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first { Task { let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; await model.validateManualIPSW(url) } }
@@ -64,7 +64,8 @@ struct ContentView: View {
                     Button("Revive Mac") { model.revive() }.disabled(!model.canRevive)
                     Button("Refresh") { Task { await model.refreshDiagnosticsAndTarget() } }
                 }
-                if !model.isDemoMode && !model.privilegedHelperState.isReady { helperSetup }
+                if !model.isDemoMode && model.privilegeMode == .signedHelper && !model.privilegedHelperState.isReady { helperSetup }
+                if !model.isDemoMode && model.privilegeMode == .community { Text("Community build — administrator authorization is requested only when entering DFU.").font(.caption).foregroundStyle(.secondary) }
                 if model.doctorReport?.status.host.macVDMToolPath == nil { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label("Target Mac", systemImage: "desktopcomputer") }

@@ -4,6 +4,11 @@
 
 DFUUtility is distributed as a ZIP containing `DFUUtility.app`. ZIP preserves the signed bundle and supports the normal drag-to-Applications workflow without introducing an installer package. The privileged service is embedded and registered by `SMAppService`; it does not require a custom installer.
 
+There are two runtime models:
+
+- **Community:** source/local installation, ad-hoc signature, no paid membership, and OS administrator authorization through `/usr/bin/osascript`. The embedded daemon is retained but not registered.
+- **Signed:** Developer ID Application signature, notarized ZIP, and the embedded `SMAppService` daemon.
+
 Version, build, helper protocol, and vendored revision originate in `Config/Version.env`. `scripts/generate-build-metadata.sh` produces the Swift constants. Packaging records the Git commit and UTC build date in `Info.plist`, so Git is not needed at runtime.
 
 ## Deterministic signing order
@@ -39,10 +44,18 @@ DFUUTILITY_SIGNING_IDENTITY="Developer ID Application: Example Name (TEAMID)" \
   scripts/release-check.sh --production
 ```
 
-Development/ad-hoc package:
+Development/ad-hoc package (UI testing only; its privileged daemon cannot register):
 
 ```sh
 scripts/package-app.sh release
+scripts/verify-app.sh .build/app/DFUUtility.app
+```
+
+Team-signed development package (required for local `SMAppService` helper testing):
+
+```sh
+scripts/package-app.sh release \
+  --identity "Apple Development: Developer Name (TEAMID)"
 scripts/verify-app.sh .build/app/DFUUtility.app
 ```
 
@@ -69,7 +82,7 @@ The script submits a temporary ZIP with `notarytool --wait`, staples and validat
 
 A same-Team Developer ID app can connect to a previously registered helper and negotiate its protocol. Matching protocol runs normally. An older protocol triggers unregister/register replacement from the new app bundle. A newer protocol is rejected rather than downgraded silently. Registration is not reported ready until the daemon responds with the required protocol.
 
-Ad-hoc builds are deliberately pinned to the exact containing app code hash; replace an ad-hoc build by unregistering the old helper first. This development restriction is not weakened to simulate production upgrades.
+Ad-hoc builds are deliberately pinned to the exact containing app code hash for XPC validation, but current macOS rejects their privileged daemon before it reaches XPC. Use a stable Apple Development Team ID for local helper lifecycle testing. Replace an old development registration with the narrowly scoped unregister command below before changing signing teams or bundle identity.
 
 Unregister without deleting the app, cache, logs, or unrelated files:
 

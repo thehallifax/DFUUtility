@@ -4,7 +4,19 @@ Native Swift macOS utility for Apple Silicon Mac DFU transition, Apple IPSW disc
 
 ## Native macOS app
 
-The SwiftUI app detects one target, requests system authorization for DFU through a narrowly scoped service, verifies the ECID transition, selects Apple's current compatible image, reuses validated cache entries, and exposes carefully gated revive and restore controls with stage-local `cfgutil` progress.
+The SwiftUI app detects one target, requests system administrator authorization only when entering DFU, verifies the ECID transition, selects Apple's current compatible image, reuses validated cache entries, and exposes carefully gated revive and restore controls with stage-local `cfgutil` progress.
+
+### Free Community installation
+
+Community builds need no Apple Developer Program membership. They are built locally, ad-hoc signed, and use the standard macOS administrator authorization dialog to run only the bundled `macvdmtool dfu` operation:
+
+```sh
+git clone <repository-url>
+cd DFUUtility
+scripts/install-local.sh
+```
+
+Use `scripts/install-local.sh --skip-tests` only after tests have already passed. The app is installed at `/Applications/DFUUtility.app`; open it from Applications. Requirements are macOS 14 or newer, an Apple Silicon host for DFU entry, Apple Configurator with `cfgutil` for discovery/revive/restore, and administrator credentials only when **Enter DFU** is clicked. Community builds are not notarized public binaries.
 
 Build and launch with Swift Package Manager:
 
@@ -14,7 +26,7 @@ swift build
 swift run DFUUtility
 ```
 
-Use the packaged application for the real GUI workflow; a raw `swift run` executable cannot register an embedded launch daemon. A deterministic development mode never invokes hardware tools:
+Use the packaged application for the normal GUI workflow. A deterministic demo mode never invokes hardware tools:
 
 ```sh
 DFUUTILITY_DEMO=1 swift run DFUUtility
@@ -33,7 +45,7 @@ scripts/package-app.sh release
 open .build/app/DFUUtility.app
 ```
 
-This is explicitly an ad-hoc development package. For signed distribution:
+This is a fully functional ad-hoc Community package. It uses `osascript` directly—not Terminal, interactive `sudo`, `sudo -S`, or a custom password field—to present macOS authorization UI. For future signed distribution:
 
 ```sh
 scripts/package-app.sh release \
@@ -47,7 +59,7 @@ Packaging signs nested code explicitly, enables hardened runtime for Developer I
 
 Normal use is: connect one target, click **Enter DFU**, approve the standard macOS authorization dialog, download the recommended image if needed, then choose **Revive Mac** or **Restore Mac**. Restore always presents a destructive confirmation. Local operation logs live under `~/Library/Logs/DFUUtility/`.
 
-On first launch, click **Set Up DFU Helper**. If macOS requires approval, the app reports **Awaiting user approval** and links to System Settings. Ready means the registered service has responded with the compatible protocol—not merely that registration was requested. To unregister before removal:
+Community builds require no helper setup or background item. A matching Team-ID signed build automatically uses the preserved `SMAppService` helper; only that mode shows **Set Up DFU Helper**. Ready means the registered service has responded with the compatible protocol—not merely that registration was requested. To unregister an old signed helper before removal:
 
 ```sh
 scripts/uninstall-helper.sh /Applications/DFUUtility.app
@@ -80,7 +92,7 @@ swift build -c release
 
 `doctor` checks architecture, macOS, Apple Configurator, `cfgutil`, the bundled/project-built `macvdmtool`, restore support, cache writability, and target discovery. No attached target is a normal non-fatal result. Users do not install `macvdmtool` separately.
 
-Helper lookup precedence is: application-bundled copy, explicit `DFUCTL_MACVDMTOOL_PATH` development override, SwiftPM-built sibling, `/opt/homebrew/bin`, then `/usr/local/bin`. External copies are developer fallbacks only. The CLI delegates authentication to `/usr/bin/sudo`; the GUI uses Authorization Services and an `SMAppService` launch daemon over authenticated XPC. Neither path sees or stores a password. See [Privileged helper architecture](docs/PRIVILEGED_HELPER.md).
+General helper lookup precedence is: application-bundled copy, explicit `DFUCTL_MACVDMTOOL_PATH` development override, SwiftPM-built sibling, `/opt/homebrew/bin`, then `/usr/local/bin`. The Community GUI deliberately narrows this to the bundled or project-built executable and the fixed `dfu` argument. The CLI retains terminal-native `/usr/bin/sudo`; the Community GUI uses the OS-owned `osascript` administrator dialog; Team-ID builds use the signed `SMAppService` daemon. No path reads or stores a password. See [Privileged helper architecture](docs/PRIVILEGED_HELPER.md).
 
 ## IPSW commands
 
@@ -132,7 +144,7 @@ Broader Apple Silicon hardware coverage is still required.
 - The cache rechecks size and restore manifests when listing/reusing; the authoritative SHA-1 is calculated at download completion because hashing a roughly 20 GB image on every listing would be unnecessarily expensive.
 - Restore stages and stage-local percentages come from real `cfgutil` events; the app does not fabricate an overall percentage. Active restore cancellation is intentionally not presented until hardware-tested safely.
 - Manual IPSW validation confirms archive structure but does not invent version/build metadata when it cannot be read reliably.
-- `scripts/package-app.sh` applies consistent ad-hoc signatures and embeds the Service Management daemon for local testing. Distribution still requires Developer ID signing, hardened runtime, notarization/stapling, and testing from a stable application location.
+- Community distribution is source/GitHub plus a local ad-hoc build and system authorization through `osascript`. Future signed distribution is a Developer ID, notarized ZIP using the embedded `SMAppService` helper.
 - A clean-machine Developer ID/notarization acceptance run has not yet been performed. Hardware validated on MacBook Air M2 (Mac14,2); broader Apple Silicon and T2 coverage remains to be tested.
 
 ## Third-party licenses

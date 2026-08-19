@@ -34,8 +34,10 @@ public final class AppModel: ObservableObject {
     @Published public var presentedError: String?
     @Published public private(set) var lastLogURL: URL?
     @Published public private(set) var privilegedHelperState: PrivilegedHelperState = .notRegistered
+    @Published public private(set) var helperRegistrationErrorDetails: String?
 
     public let isDemoMode: Bool
+    public let privilegeMode: PrivilegeMode
     private let ipswService: any IPSWService
     private let discovery: any DeviceDiscovering
     private let cache: IPSWCache
@@ -47,9 +49,12 @@ public final class AppModel: ObservableObject {
     private let requiresPrivilegedHelperSetup: Bool
     private var downloadTask: Task<Void, Never>?
 
-    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: any DFUOperating = PrivilegedDFUOperator(), operationLogger: any OperationLogging = OperationLogger(), requiresPrivilegedHelperSetup: Bool = true, isDemoMode: Bool = false) {
+    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false) {
+        let resolvedMode = privilegeMode ?? (requiresPrivilegedHelperSetup ? PrivilegeModeSelector.select() : .community)
         self.ipswService = ipswService; self.discovery = discovery; self.cache = cache; self.validator = validator
-        self.diagnostics = diagnostics; self.restoreEngine = restoreEngine; self.dfuController = dfuController; self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = requiresPrivilegedHelperSetup; self.isDemoMode = isDemoMode
+        self.diagnostics = diagnostics; self.restoreEngine = restoreEngine
+        self.dfuController = dfuController ?? PrivilegedDFUOperator(discovery: discovery, client: resolvedMode == .signedHelper ? PrivilegedDFUClient() : CommunityDFURequest())
+        self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = resolvedMode == .signedHelper; self.privilegeMode = resolvedMode; self.isDemoMode = isDemoMode
     }
 
     public var target: DFUDevice? { targetDevices.count == 1 ? targetDevices[0] : nil }
@@ -69,7 +74,11 @@ public final class AppModel: ObservableObject {
         }
     }
     public var imageURL: URL? { if case .ready(let url) = imageState { return url }; return nil }
-    public var canEnterDFU: Bool { !isDemoMode && target?.state == .normal && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && restoreState == .idle }
+    public var canEnterDFU: Bool { !isDemoMode && target?.state == .normal && !hasSyntheticProductionIdentity && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && restoreState == .idle }
+    private var hasSyntheticProductionIdentity: Bool {
+        guard !isDemoMode, let value = target?.ecid?.uppercased() else { return false }
+        return value == "TEST" || value.hasPrefix("DEMO") || value.hasPrefix("TEST-")
+    }
     public var canRestore: Bool { !isDemoMode && target?.state == .dfu && imageURL != nil && restoreState == .idle }
     public var canRevive: Bool { !isDemoMode && (target?.state == .dfu || target?.state == .recovery) && restoreState == .idle }
 
@@ -83,18 +92,25 @@ public final class AppModel: ObservableObject {
     }
 
     public func refreshDiagnosticsAndTarget() async {
-        privilegedHelperState = await Task.detached { PrivilegedDFUClient().state() }.value
+        if privilegeMode == .signedHelper { privilegedHelperState = await Task.detached { PrivilegedDFUClient().state() }.value }
         do { doctorReport = try diagnostics.report() } catch { presentedError = error.localizedDescription }
         do { targetDevices = try discovery.devices() } catch { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
     }
 
     public func setUpPrivilegedHelper() async {
         privilegedHelperState = .registrationRequested
+        helperRegistrationErrorDetails = nil
         do {
             privilegedHelperState = try await Task.detached { try PrivilegedDFUClient().setUp() }.value
         } catch {
-            privilegedHelperState = .failed(error.localizedDescription)
-            presentedError = "DFU helper setup failed.\n\(error.localizedDescription)"
+            if case .registrationFailed(let details) = error as? PrivilegedDFUClientError {
+                helperRegistrationErrorDetails = details
+                presentedError = "DFU helper setup failed.\n\(details)"
+            } else {
+                helperRegistrationErrorDetails = NSErrorDiagnostics.describe(error)
+                presentedError = "DFU helper setup failed.\n\(error.localizedDescription)"
+            }
+            privilegedHelperState = .failed("Registration failed")
         }
     }
 
@@ -145,14 +161,15 @@ public final class AppModel: ObservableObject {
     }
 
     public func enterDFU() async {
+        guard !hasSyntheticProductionIdentity else { presentedError = "A synthetic test target identity was rejected in production mode."; return }
         guard canEnterDFU else { presentedError = "macvdmtool is not installed or DFU is unavailable."; return }
-        let log = try? operationLogger.start(operation: "Enter-DFU", target: target, release: nil)
+        let log = try? operationLogger.start(operation: "Enter DFU", target: target, release: nil)
         lastLogURL = log
         restoreState = .running(operation: "Enter DFU", stage: "Requesting administrator authorization…", fraction: nil)
         do {
-            if let log { try? operationLogger.append("Requesting privileged DFU transition", to: log) }
+            if let log { try? operationLogger.append("Privilege mode: \(privilegeMode.displayName)\nAuthorization requested via \(privilegeMode == .community ? "macOS system administrator prompt" : "signed helper")", to: log) }
             let controller = dfuController; try await Task.detached { try controller.enterDFU(timeout: 30) }.value
-            if let log { try? operationLogger.append("DFU transition verified for the same ECID", to: log) }
+            if let log { try? operationLogger.append("Transition result: success\nFinal verified state: DFU, same ECID", to: log) }
             restoreState = .idle; await refreshDiagnosticsAndTarget()
         } catch {
             if let log { try? operationLogger.append("FAILED: \(error.localizedDescription)", to: log) }

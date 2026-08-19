@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-usage() { echo "Usage: scripts/package-app.sh [debug|release] [--identity \"Developer ID Application: Name (TEAMID)\"]" >&2; exit "${1:-64}"; }
+usage() { echo "Usage: scripts/package-app.sh [debug|release] [--identity \"Apple Development or Developer ID Application identity\"]" >&2; exit "${1:-64}"; }
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 configuration=release
 identity=""
@@ -24,7 +24,11 @@ distribution="$root/.build/distribution/DFUUtility-$MARKETING_VERSION.zip"
 
 if [ -n "$identity" ]; then
   security find-identity -v -p codesigning | grep -F -- "$identity" >/dev/null || { echo "Requested signing identity was not found: $identity" >&2; exit 1; }
-  signing_mode=production
+  case "$identity" in
+    "Developer ID Application:"*) signing_mode=production ;;
+    "Apple Development:"*) signing_mode=team-signed-development ;;
+    *) echo "Unsupported identity type. Use Apple Development for local helper testing or Developer ID Application for distribution." >&2; exit 1 ;;
+  esac
   signer=$identity
 else
   signing_mode=development-ad-hoc
@@ -59,11 +63,13 @@ plutil -insert DFUUtilityBuildDate -string "$build_date" "$app/Contents/Info.pli
 plutil -insert DFUUtilityHelperProtocolVersion -integer "$HELPER_PROTOCOL_VERSION" "$app/Contents/Info.plist"
 plutil -insert DFUUtilityMacVDMToolRevision -string "$MACVDMTOOL_REVISION" "$app/Contents/Info.plist"
 
-if [ "$signing_mode" = production ]; then
+if [ "$signing_mode" != development-ad-hoc ]; then
   common="--force --timestamp --options runtime --sign"
   codesign $common "$signer" --identifier org.dfuutility.macvdmtool "$app/Contents/Resources/macvdmtool"
   codesign $common "$signer" --entitlements Signing/DFUPrivilegedHelper.entitlements --identifier org.dfuutility.privileged-helper "$app/Contents/Library/LaunchServices/DFUPrivilegedHelper"
   codesign $common "$signer" --entitlements Signing/DFUUtility.entitlements --identifier org.dfuutility.app "$app"
+  packaged_team=$(codesign -dvv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)
+  [ -n "$packaged_team" ] && [ "$packaged_team" != "not set" ] || { echo "The selected identity did not produce a Team ID; privileged helper registration would fail." >&2; exit 1; }
 else
   codesign --force --sign - --identifier org.dfuutility.macvdmtool "$app/Contents/Resources/macvdmtool"
   codesign --force --sign - --entitlements Signing/DFUPrivilegedHelper.entitlements --identifier org.dfuutility.privileged-helper "$app/Contents/Library/LaunchServices/DFUPrivilegedHelper"

@@ -1,8 +1,8 @@
 import DFUCore
 import Foundation
 
-/// GUI-only DFU path. Authorization and privileged execution are delegated to the
-/// registered service; this process never invokes sudo or receives credentials.
+/// Shared GUI DFU transition verifier. The injected requester may use either the
+/// signed service or the system-owned Community authorization dialog.
 public struct PrivilegedDFUOperator: DFUOperating {
     private let discovery: any DeviceDiscovering
     private let client: any PrivilegedDFURequesting

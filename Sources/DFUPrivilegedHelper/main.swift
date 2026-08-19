@@ -1,14 +1,16 @@
 import DFUCore
 import Foundation
 import Security
+import OSLog
+
+private let helperLogger = Logger(subsystem: "org.dfuutility.privileged-helper", category: "Service")
 
 private final class PrivilegedService: NSObject, PrivilegedDFUXPCProtocol {
     func status(reply: @escaping (Int, String) -> Void) { reply(BuildMetadata.helperProtocolVersion, BuildMetadata.displayVersion) }
 
     func enterDFU(authorization: Data, reply: @escaping (Int32, String?) -> Void) {
         guard validateAuthorization(authorization) else { reply(EPERM, "Administrator authorization failed."); return }
-        let helperURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-        let tool = helperURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/macvdmtool")
+        guard let helperURL = ExecutableLayout.currentExecutableURL(), let tool = ExecutableLayout.bundledToolURL(for: helperURL) else { reply(ENOENT, "The privileged helper could not resolve its containing application."); return }
         guard Self.validBundledTool(tool) else { reply(EPERM, "The bundled DFU implementation failed integrity validation."); return }
         let process = Process(); process.executableURL = tool; process.arguments = ["dfu"]
         let output = Pipe(); process.standardOutput = output; process.standardError = output
@@ -49,45 +51,49 @@ private final class PrivilegedService: NSObject, PrivilegedDFUXPCProtocol {
 private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     private let service = PrivilegedService()
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        guard Self.validCaller(connection.processIdentifier) else { return false }
+        let result = Self.validateCaller(connection.processIdentifier)
+        guard result.accepted else { helperLogger.error("Rejected XPC caller pid=\(connection.processIdentifier) reason=\(result.reason, privacy: .public)"); return false }
+        helperLogger.notice("Accepted XPC caller pid=\(connection.processIdentifier)")
         connection.exportedInterface = NSXPCInterface(with: PrivilegedDFUXPCProtocol.self)
         connection.exportedObject = service; connection.resume(); return true
     }
 
-    private static func validCaller(_ pid: pid_t) -> Bool {
+    static func validateCaller(_ pid: pid_t) -> (accepted: Bool, reason: String) {
         var guest: SecCode?
         let attributes = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
-        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &guest) == errSecSuccess, let guest else { return false }
+        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &guest) == errSecSuccess, let guest else { return (false, "caller code unavailable") }
         var guestStatic: SecStaticCode?
-        guard SecCodeCopyStaticCode(guest, [], &guestStatic) == errSecSuccess, let guestStatic else { return false }
+        guard SecCodeCopyStaticCode(guest, [], &guestStatic) == errSecSuccess, let guestStatic else { return (false, "caller static code unavailable") }
         var info: CFDictionary?
         guard SecCodeCopySigningInformation(guestStatic, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
-              let values = info as? [CFString: Any] else { return false }
+              let values = info as? [CFString: Any] else { return (false, "caller signing information unavailable") }
         let caller = CallerIdentity(identifier: values[kSecCodeInfoIdentifier] as? String, teamIdentifier: values[kSecCodeInfoTeamIdentifier] as? String)
-        guard caller.identifier == PrivilegedDFUConstants.appIdentifier else { return false }
+        guard caller.identifier == PrivilegedDFUConstants.appIdentifier else { return (false, "app identifier mismatch") }
 
         // Bind the connection to the exact app containing this daemon. This keeps
         // ad-hoc development builds from trusting an attacker-controlled binary
         // that merely copies the bundle identifier.
-        let helperURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-        let appURL = helperURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard let helperURL = ExecutableLayout.currentExecutableURL(), let appURL = ExecutableLayout.containingAppURL(for: helperURL) else { return (false, "containing app path unavailable") }
         var expectedCode: SecStaticCode?
-        guard SecStaticCodeCreateWithPath(appURL as CFURL, [], &expectedCode) == errSecSuccess, let expectedCode else { return false }
+        guard SecStaticCodeCreateWithPath(appURL as CFURL, [], &expectedCode) == errSecSuccess, let expectedCode else { return (false, "containing app code unavailable") }
         var expectedInfo: CFDictionary?
         guard SecStaticCodeCheckValidity(expectedCode, [], nil) == errSecSuccess,
               SecStaticCodeCheckValidity(guestStatic, [], nil) == errSecSuccess,
               SecCodeCopySigningInformation(expectedCode, SecCSFlags(rawValue: kSecCSSigningInformation), &expectedInfo) == errSecSuccess,
-              let expected = expectedInfo as? [CFString: Any] else { return false }
+              let expected = expectedInfo as? [CFString: Any] else { return (false, "code validity or signing information failed") }
         if let expectedTeam = expected[kSecCodeInfoTeamIdentifier] as? String {
             // Stable production requirement: valid code, exact app identifier,
             // and the same Developer ID Team ID permit signed upgrades.
-            return caller.teamIdentifier == expectedTeam
+            let accepted = CallerValidationPolicy.permits(caller: caller, expectedTeam: expectedTeam, callerHash: nil, expectedHash: nil)
+            return (accepted, accepted ? "same Developer ID team" : "Team ID mismatch")
         }
         guard let callerHash = values[kSecCodeInfoUnique] as? Data,
-              let expectedHash = expected[kSecCodeInfoUnique] as? Data else { return false }
-        return caller.teamIdentifier == nil && callerHash == expectedHash
+              let expectedHash = expected[kSecCodeInfoUnique] as? Data else { return (false, "ad-hoc code hash unavailable") }
+        let accepted = CallerValidationPolicy.permits(caller: caller, expectedTeam: nil, callerHash: callerHash, expectedHash: expectedHash)
+        return (accepted, accepted ? "exact ad-hoc app code" : "ad-hoc code hash mismatch")
     }
 }
 
 private let delegate = ListenerDelegate(), listener = NSXPCListener(machServiceName: PrivilegedDFUConstants.machService)
-listener.delegate = delegate; listener.resume(); RunLoop.current.run()
+helperLogger.notice("Helper starting pid=\(getpid()) executable=\(ExecutableLayout.currentExecutableURL()?.path ?? "unavailable", privacy: .public)")
+listener.delegate = delegate; listener.resume(); helperLogger.notice("XPC listener active: \(PrivilegedDFUConstants.machService, privacy: .public)"); RunLoop.current.run()

@@ -4,8 +4,10 @@ import SwiftUI
 
 struct DiagnosticsView: View {
     let report: DoctorReport?
+    var privilegeMode: PrivilegeMode = PrivilegeModeSelector.select()
     var helperState: PrivilegedHelperState = PrivilegedDFUClient().state()
-    private var text: String { AcceptanceDiagnostics.render(report: report, helperState: helperState) }
+    var registrationErrorDetails: String?
+    private var text: String { AcceptanceDiagnostics.render(report: report, privilegeMode: privilegeMode, helperState: helperState) + (registrationErrorDetails.map { "Registration error details: \($0)\n" } ?? "") }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
