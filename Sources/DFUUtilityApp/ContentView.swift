@@ -104,17 +104,7 @@ struct ContentView: View {
                     Button("Other Version…") { showVersions = true }.disabled(model.availableReleases.isEmpty)
                     Button("Choose IPSW…") { showImporter = true }
                 }
-                if case .running(_, let stage, let fraction) = model.restoreState {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(stage)
-                        if let fraction { ProgressView(value: fraction); Text("\(Int(fraction * 100))%").font(.caption.monospacedDigit()) }
-                        else { ProgressView() }
-                        Text("Do not disconnect the target Mac.").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if case .reconnecting = model.restoreState { ProgressView("Operation completed. Waiting for Mac to restart…") }
-                if case .completed(let message) = model.restoreState { Label(message, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
-                if case .failed(let message) = model.restoreState { Label(message, systemImage: "xmark.circle").foregroundStyle(.red) }
+                OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.selectedRelease?.version))
                 Button("Restore Mac", role: .destructive) { confirmRestore = true }.disabled(!model.canRestore)
                 HStack {
                     if let log = model.lastLogURL { Button("View Log") { NSWorkspace.shared.open(log) } }
