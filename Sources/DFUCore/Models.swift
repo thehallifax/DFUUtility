@@ -64,7 +64,7 @@ public enum DFUError: LocalizedError, Equatable {
         case .multipleTargets(let count): "Found \(count) possible targets. Disconnect all but one target."
         case .targetNotInDFU: "A target is connected, but it is not in DFU mode."
         case .transitionTimedOut: "The target did not appear in DFU mode before the timeout. Check the cable and DFU port."
-        case .targetChanged(let expected, let actual): "A different target appeared after the DFU request (expected ECID \(expected), found \(actual ?? "unknown"))."
+        case .targetChanged(let expected, let actual): "DFU transition could not be verified for the original target (expected ECID \(expected), found \(actual ?? "unknown"))."
         case .invalidIPSW(let reason): "Invalid IPSW: \(reason)"
         case .commandFailed(let command, let status, let output):
             "Command failed (exit \(status)): \(command)\n\(output)"

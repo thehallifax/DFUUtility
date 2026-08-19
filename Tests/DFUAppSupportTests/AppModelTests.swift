@@ -26,9 +26,15 @@ private struct AppMockDiagnostics: DiagnosticsProviding {
 private struct AppMockRestore: RestoreOperating { func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> { AsyncThrowingStream { $0.yield(.completed); $0.finish() } } }
 private struct AppMockDFU: DFUOperating { func enterDFU(timeout: TimeInterval) throws {} }
 private struct CancelledDFU: DFUOperating { func enterDFU(timeout: TimeInterval) throws { throw PrivilegedDFUClientError.authorizationCancelled } }
+private final class AppMockLogger: @unchecked Sendable, OperationLogging {
+    private let lock = NSLock(); private(set) var starts = 0; private(set) var lastECID: String?
+    func start(operation: String, target: DFUDevice?, release: IPSWRelease?) throws -> URL { lock.withLock { starts += 1; lastECID = target?.ecid }; return URL(fileURLWithPath: "/tmp/mock-operation.log") }
+    func append(_ message: String, to url: URL) throws {}
+}
+private let noOpLogger = AppMockLogger()
 
 @MainActor private func model(service: AppMockService = AppMockService(), devices: [DFUDevice] = [], validator: AppMockValidator = AppMockValidator(valid: true), cache: IPSWCache = tempCache(), demo: Bool = false) -> AppModel {
-    AppModel(ipswService: service, discovery: AppMockDiscovery(values: devices), cache: cache, validator: validator, diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), requiresPrivilegedHelperSetup: false, isDemoMode: demo)
+    AppModel(ipswService: service, discovery: AppMockDiscovery(values: devices), cache: cache, validator: validator, diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: demo)
 }
 
 @Test @MainActor func catalogueLoadsAndSelectsLatest() async {
@@ -55,7 +61,7 @@ private struct CancelledDFU: DFUOperating { func enterDFU(timeout: TimeInterval)
 }
 
 @Test @MainActor func activeDownloadTaskCancelsCleanly() async throws {
-    let app = AppModel(ipswService: DemoIPSWService(), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), requiresPrivilegedHelperSetup: false, isDemoMode: true)
+    let app = AppModel(ipswService: DemoIPSWService(), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true)
     await app.load(); app.beginDownload(); try await Task.sleep(for: .milliseconds(180)); app.cancelDownload(); try await Task.sleep(for: .milliseconds(180))
     #expect(app.downloadState == .cancelled); #expect(app.imageURL == nil)
 }
@@ -88,17 +94,38 @@ private struct CancelledDFU: DFUOperating { func enterDFU(timeout: TimeInterval)
     let app = model(); await app.refreshDiagnosticsAndTarget(); #expect(app.doctorReport?.isFundamentallyUsable == true); #expect(!app.canEnterDFU)
 }
 
+@Test @MainActor func communityStartupDoesNotRequireOrQueryHelper() async {
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, privilegeMode: .community)
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.privilegeMode == .community)
+    #expect(app.privilegedHelperState == .notRegistered)
+}
+
 @Test @MainActor func catalogueErrorIsActionable() async {
     let app = model(service: AppMockService(failure: "offline")); await app.load(); if case .failed = app.catalogueState {} else { Issue.record("Expected failed catalogue") }; #expect(app.presentedError?.contains("could not be reached") == true)
 }
 
 @Test @MainActor func guiAuthorizationCancellationLeavesAppUsable() async {
-    let target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "TEST")
-    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: CancelledDFU(), requiresPrivilegedHelperSetup: false)
+    let target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: CancelledDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
     await app.refreshDiagnosticsAndTarget(); #expect(app.canEnterDFU)
     await app.enterDFU()
     #expect(app.presentedError == "Administrator authorization was cancelled.")
     if case .failed = app.restoreState {} else { Issue.record("Expected recoverable failure state") }
+}
+
+@Test @MainActor func syntheticECIDCannotReachProductionOperationLog() async {
+    let logger = AppMockLogger(), target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "TEST")
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: logger, requiresPrivilegedHelperSetup: false)
+    await app.refreshDiagnosticsAndTarget(); #expect(!app.canEnterDFU); await app.enterDFU()
+    #expect(logger.starts == 0); #expect(app.presentedError?.contains("synthetic test target") == true)
+}
+
+@Test @MainActor func realTargetECIDReachesOperationLog() async {
+    let logger = AppMockLogger(), target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0x1569301A08C01E")
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: logger, requiresPrivilegedHelperSetup: false)
+    await app.refreshDiagnosticsAndTarget(); await app.enterDFU()
+    #expect(logger.lastECID == "0x1569301A08C01E")
 }
 
 private struct SuccessfulPrivilegedRequest: PrivilegedDFURequesting { func enterDFU() throws {} }

@@ -16,6 +16,18 @@ struct DFUUtilityApplication: App {
     @StateObject private var model: AppModel
 
     init() {
+        if CommandLine.arguments.contains("--register-helper-diagnostic") {
+            let client = PrivilegedDFUClient()
+            print("Before: \(client.state().description)")
+            do { print("After: \(try client.setUp().description)"); exit(0) }
+            catch {
+                print("After: \(client.state().description)")
+                let details: String
+                if case .registrationFailed(let value) = error as? PrivilegedDFUClientError { details = value }
+                else { details = NSErrorDiagnostics.describe(error) }
+                FileHandle.standardError.write(Data("Registration error: \(details)\n".utf8)); exit(1)
+            }
+        }
         if CommandLine.arguments.contains("--unregister-helper") {
             do { try PrivilegedDFUClient().unregister(); print("Privileged helper unregistered."); exit(0) }
             catch { FileHandle.standardError.write(Data("Failed to unregister privileged helper: \(error.localizedDescription)\n".utf8)); exit(1) }
@@ -30,6 +42,6 @@ struct DFUUtilityApplication: App {
     var body: some Scene {
         WindowGroup("DFUUtility") { ContentView(model: model).frame(minWidth: 590, minHeight: 620) }
             .windowResizability(.contentMinSize)
-        Settings { DiagnosticsView(report: model.doctorReport, helperState: model.privilegedHelperState) }
+        Settings { DiagnosticsView(report: model.doctorReport, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails) }
     }
 }
