@@ -203,3 +203,63 @@ private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscoverin
     #expect(restore.title == "Restoring macOS 26.6.2"); #expect(restore.fraction == 0.49)
     #expect(revive.title == "Reviving Mac"); #expect(revive.fraction == 0.34)
 }
+
+@MainActor private func waitForRestoreState(_ app: AppModel, timeout: TimeInterval = 2, matching predicate: (AppRestoreState) -> Bool) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if predicate(app.restoreState) { return true }
+        try? await Task.sleep(for: .milliseconds(20))
+    }
+    return predicate(app.restoreState)
+}
+
+@Test @MainActor func liveProcessChunksReachAppModelBeforeProcessCompletion() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let executable = directory.appendingPathComponent("fixture-cfgutil")
+    let script = #"""
+    #!/bin/sh
+    sleep 0.30
+    printf 'Step = "Wait'
+    sleep 0.05
+    printf 'ing for the device [1/4]";\nTy'
+    sleep 0.05
+    printf 'pe = Step;\n'
+    sleep 0.30
+    printf 'Step = "Step 3 of 4: Unzipping System";\nType = Step;\n'
+    sleep 0.25
+    printf 'Progress = "0.34";\nStep = "Step 3 of 4: Unzip'
+    sleep 0.05
+    printf 'ping System";\nType = Progress;\n'
+    sleep 0.30
+    printf 'Step = "Step 4 of 4: Installing System";\nType = Step;\n'
+    sleep 0.25
+    printf 'Progress = "0.66";\nStep = "Step 4 of 4: Installing System";\nType = Progress;\n'
+    sleep 0.30
+    exit 0
+    """#
+    try Data(script.utf8).write(to: executable)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+    let dfu = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xABC")
+    let restarted = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let discovery = AppSequencedDiscovery([[dfu], [dfu], [restarted]])
+    let engine = RestoreEngine(discovery: discovery, runner: ProcessRunner(), cfgutil: executable)
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: engine, dfuController: AppMockDFU(), operationLogger: AppMockLogger(), requiresPrivilegedHelperSetup: false)
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.canRevive)
+    app.revive()
+
+    #expect(await waitForRestoreState(app) { if case .running(_, "Preparing", _, _, nil) = $0 { true } else { false } })
+    #expect(await waitForRestoreState(app) { OperationProgressPresentation(state: $0).stage == "Waiting for the device" })
+    #expect(await waitForRestoreState(app) { OperationProgressPresentation(state: $0).stage == "Unzipping System — Step 3 of 4" })
+    #expect(await waitForRestoreState(app) { OperationProgressPresentation(state: $0).fraction == 0.34 })
+    // The fixture process is still sleeping here; seeing the next indeterminate
+    // stage proves state was not delivered as one batch after process exit.
+    #expect(await waitForRestoreState(app) {
+        let value = OperationProgressPresentation(state: $0)
+        return value.stage == "Installing System — Step 4 of 4" && value.fraction == nil
+    })
+    #expect(await waitForRestoreState(app) { OperationProgressPresentation(state: $0).fraction == 0.66 })
+    #expect(await waitForRestoreState(app, timeout: 3) { if case .completed = $0 { true } else { false } })
+}

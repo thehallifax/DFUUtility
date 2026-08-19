@@ -25,20 +25,52 @@ public enum RestoreEvent: Sendable, Equatable {
 /// is ignored rather than rendered as a negative percentage.
 public struct CFGUtilEventParser: Sendable {
     private var buffer = ""
+    private var pendingRecord = ""
     private var currentStage: String?
 
     public init() {}
 
     public mutating func consume(_ data: Data, final: Bool = false) -> [RestoreEvent] {
-        buffer += String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n")
+        buffer += String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
         var events: [RestoreEvent] = []
-        while let range = buffer.range(of: "\n\n") {
-            let block = String(buffer[..<range.lowerBound])
-            buffer.removeSubrange(..<range.upperBound)
-            events += parse(block)
+        while let newline = buffer.firstIndex(of: "\n") {
+            let line = String(buffer[..<newline])
+            buffer.removeSubrange(...newline)
+            events += consumeCompleteLine(line)
         }
-        if final, !buffer.isEmpty { events += parse(buffer); buffer = "" }
+        if final {
+            if !buffer.isEmpty { events += consumeCompleteLine(buffer); buffer = "" }
+            events += flushPendingRecord()
+        }
         return events
+    }
+
+    private mutating func consumeCompleteLine(_ line: String) -> [RestoreEvent] {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return flushPendingRecord() }
+        if pendingRecord.isEmpty, trimmed.hasPrefix("cfgutil:") { return parse(trimmed) }
+        pendingRecord += pendingRecord.isEmpty ? line : "\n" + line
+
+        let record = pendingRecord.trimmingCharacters(in: .whitespacesAndNewlines)
+        if record.hasPrefix("{") {
+            return trimmed == "}" ? flushPendingRecord() : []
+        }
+        // cfgutil's live stream does not consistently place a blank line between
+        // dictionaries. `Type` is the final key in its unbraced progress record,
+        // so its completed assignment is also a safe incremental boundary.
+        if trimmed.range(of: #"^Type\s*=.*;\s*$"#, options: .regularExpression) != nil {
+            return flushPendingRecord()
+        }
+        return []
+    }
+
+    private mutating func flushPendingRecord() -> [RestoreEvent] {
+        guard !pendingRecord.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { pendingRecord = ""; return [] }
+        let record = pendingRecord
+        pendingRecord = ""
+        return parse(record)
     }
 
     private mutating func parse(_ block: String) -> [RestoreEvent] {
