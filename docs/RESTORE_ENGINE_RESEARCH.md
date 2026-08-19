@@ -23,7 +23,7 @@ system_profiler SPUSBDataType
 ioreg -p IOUSB -l -w 0
 ```
 
-The initial spike had no target. Subsequent integration testing used a MacBook Air M2 (`Mac14,2`, ECID `0x1569301A08C01E`) and is recorded below. No destructive restore has been performed.
+The initial spike had no target. Subsequent integration testing used a MacBook Air M2 (`Mac14,2`) and is recorded below. Device identifiers are intentionally omitted from this public document.
 
 Relevant `cfgutil` 2.20 surfaces:
 
@@ -43,13 +43,15 @@ The upstream project documents port/cable requirements and Apache-2.0 licensing.
 
 ## Real hardware results
 
-Hardware: MacBook Air M2, model `Mac14,2`, ECID `0x1569301A08C01E`, connected to the Apple Silicon host through the applicable DFU USB-C path.
+Hardware: MacBook Air M2, model `Mac14,2`, connected to the Apple Silicon host through the applicable DFU USB-C path.
 
 | Workflow | Result |
 |---|---|
 | Normal-state discovery, model, and ECID | PASS |
 | Manually entered DFU discovery | PASS |
 | `cfgutil revive` | PASS |
+| GUI `cfgutil restore` | PASS |
+| Target restart verification | PASS |
 | Real `cfgutil` progress output | PASS |
 | Apple MobileAsset IPSW catalogue | PASS |
 | 19.77 GB Apple IPSW download | PASS |

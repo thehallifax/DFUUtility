@@ -94,7 +94,7 @@ else
 fi
 
 app="$root/.build/app/DFUUtility.app"
-components="Contents/MacOS/DFUUtility Contents/Library/LaunchServices/DFUPrivilegedHelper Contents/Library/LaunchDaemons/org.dfuutility.privileged-helper.plist Contents/Resources/macvdmtool Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt"
+components="Contents/MacOS/DFUUtility Contents/Library/LaunchServices/DFUPrivilegedHelper Contents/Library/LaunchDaemons/org.dfuutility.privileged-helper.plist Contents/Resources/AppIcon.icns Contents/Resources/DFUUtility-LICENSE.txt Contents/Resources/macvdmtool Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt"
 missing=""
 for component in $components; do [ -e "$app/$component" ] || missing="$missing $component"; done
 if [ -z "$missing" ]; then pass "Bundle structure"; else fail "Bundle structure" "missing:$missing"; fi
@@ -114,8 +114,10 @@ if codesign -d --entitlements :- "$app" >"$log_root/app-entitlements.log" 2>&1 &
 packaged_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || echo missing)
 packaged_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist" 2>/dev/null || echo missing)
 packaged_protocol=$(/usr/libexec/PlistBuddy -c 'Print :DFUUtilityHelperProtocolVersion' "$app/Contents/Info.plist" 2>/dev/null || echo missing)
-if [ "$packaged_version" = "$version" ] && [ "$packaged_build" = "$build" ] && [ "$packaged_protocol" = "$helper_protocol" ]; then pass "Packaged metadata"; else fail "Packaged metadata" "Info.plist mismatch"; fi
+packaged_icon=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist" 2>/dev/null || echo missing)
+if [ "$packaged_version" = "$version" ] && [ "$packaged_build" = "$build" ] && [ "$packaged_protocol" = "$helper_protocol" ] && [ "$packaged_icon" = AppIcon ]; then pass "Packaged metadata"; else fail "Packaged metadata" "Info.plist mismatch"; fi
 
+if [ -s LICENSE ] && grep -Fq "Apache License" LICENSE && [ -s "$app/Contents/Resources/DFUUtility-LICENSE.txt" ]; then pass "Project license" "Apache License 2.0"; else fail "Project license" "project Apache-2.0 license missing from source or app bundle"; fi
 if [ -s Vendor/macvdmtool/LICENSE ] && [ -s Vendor/macvdmtool/UPSTREAM_REVISION ] && [ -s Vendor/macvdmtool/README.upstream.md ] && grep -Fq "$vdm_revision" Vendor/macvdmtool/UPSTREAM_REVISION && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt" ] && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt" ]; then pass "Third-party licenses"; else fail "Third-party licenses" "macvdmtool attribution/license/revision incomplete"; fi
 
 artifact="$root/.build/distribution/$(distribution_artifact_name "$version")"
@@ -133,7 +135,21 @@ else warn "Developer ID" "NOT CONFIGURED"; fi
 if [ "$signing_mode" = developer-id ] && xcrun stapler validate "$app" >"$log_root/stapler.log" 2>&1; then pass "Notarization" "STAPLED"
 elif [ "$mode" = production ]; then fail "Notarization" "staple not verified"
 else warn "Notarization" "NOT VERIFIED"; fi
-warn "Hardware acceptance" "PENDING — packaged GUI Normal → DFU"
+acceptance="$root/Config/HardwareAcceptance.json"
+acceptance_ok=true
+if ! plutil -convert xml1 -o /dev/null "$acceptance" >/dev/null 2>&1; then acceptance_ok=false; fi
+accepted_version=$(plutil -extract appVersion raw "$acceptance" 2>/dev/null || true)
+accepted_name=$(plutil -extract hardware.displayName raw "$acceptance" 2>/dev/null || true)
+accepted_identifier=$(plutil -extract hardware.identifier raw "$acceptance" 2>/dev/null || true)
+for key in normalDetection guiEnterDFU sameECIDVerification guiRevive guiRestore liveProgress targetRestartVerification; do
+  [ "$(plutil -extract "results.$key" raw "$acceptance" 2>/dev/null || true)" = PASS ] || acceptance_ok=false
+done
+if [ "$acceptance_ok" = true ] && [ "$accepted_version" = "$version" ] && [ -n "$accepted_name" ] && [ -n "$accepted_identifier" ]; then
+  pass "Hardware acceptance" "$accepted_name ($accepted_identifier)"
+else
+  fail "Hardware acceptance" "missing, incomplete, or not recorded for version $version"
+fi
+warn "Hardware coverage" "broader Apple Silicon and Intel T2 coverage pending"
 
 result=$(release_result "$failures" "$warnings" "$mode")
 echo

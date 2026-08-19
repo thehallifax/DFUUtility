@@ -114,6 +114,7 @@ public final class AppModel: ObservableObject {
 
     public let isDemoMode: Bool
     public let privilegeMode: PrivilegeMode
+    private let screenshotScenario: String?
     private let ipswService: any IPSWService
     private let discovery: any DeviceDiscovering
     private let cache: IPSWCache
@@ -125,12 +126,12 @@ public final class AppModel: ObservableObject {
     private let requiresPrivilegedHelperSetup: Bool
     private var downloadTask: Task<Void, Never>?
 
-    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false) {
+    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false, screenshotScenario: String? = nil) {
         let resolvedMode = privilegeMode ?? (requiresPrivilegedHelperSetup ? PrivilegeModeSelector.select() : .community)
         self.ipswService = ipswService; self.discovery = discovery; self.cache = cache; self.validator = validator
         self.diagnostics = diagnostics; self.restoreEngine = restoreEngine
         self.dfuController = dfuController ?? PrivilegedDFUOperator(discovery: discovery, client: resolvedMode == .signedHelper ? PrivilegedDFUClient() : CommunityDFURequest())
-        self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = resolvedMode == .signedHelper; self.privilegeMode = resolvedMode; self.isDemoMode = isDemoMode
+        self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = resolvedMode == .signedHelper; self.privilegeMode = resolvedMode; self.isDemoMode = isDemoMode; self.screenshotScenario = screenshotScenario
     }
 
     public var target: DFUDevice? { targetDevices.count == 1 ? targetDevices[0] : nil }
@@ -182,8 +183,28 @@ public final class AppModel: ObservableObject {
     public var canRevive: Bool { !isDemoMode && (target?.state == .dfu || target?.state == .recovery) && restoreState == .idle }
 
     public func load() async {
+        if let screenshotScenario { configureScreenshot(screenshotScenario); return }
         await refreshDiagnosticsAndTarget()
         await refreshCatalogue()
+    }
+
+    private func configureScreenshot(_ scenario: String) {
+        let release = IPSWRelease(version: "26.6.2", build: "25G83", downloadURL: URL(string: "https://updates.cdn-apple.com/screenshot.ipsw")!, fileSize: 19_772_231_540, supportedDevices: ["Mac14,2"])
+        let image = URL(fileURLWithPath: "/Public Demo/UniversalMac_26.6.2_25G83_Restore.ipsw")
+        availableReleases = [release]; selectedRelease = release; imageState = .ready(image); catalogueState = .loaded
+        imageChoices = [.init(release: release, isRecommended: true, cacheState: .downloaded(image), compatibility: .compatible(model: "Mac14,2"))]
+        doctorReport = DoctorReport(status: UtilityStatus(host: HostStatus(isAppleSilicon: true, macOSVersion: "26.6.1", macVDMToolPath: URL(fileURLWithPath: "/bundled/macvdmtool"), cfgutilPath: URL(fileURLWithPath: "/Applications/Apple Configurator.app/Contents/MacOS/cfgutil")), targets: []), configuratorPresent: true, cacheDirectory: URL(fileURLWithPath: "/Public Demo/Cache"), cacheWritable: true, restoreSupported: true)
+        switch scenario {
+        case "normal", "chooser": targetDevices = [DFUDevice(state: .normal, model: "Mac14,2", ecid: "REDACTED")]
+        case "dfu": targetDevices = [DFUDevice(state: .dfu, model: "Mac14,2", ecid: "REDACTED")]
+        case "progress":
+            targetDevices = [DFUDevice(state: .dfu, model: "Mac14,2", ecid: "REDACTED")]
+            restoreState = .running(operation: "Revive", stage: "Installing System", stageIndex: 4, stageTotal: 4, fraction: 0.66)
+        case "completed":
+            targetDevices = [DFUDevice(state: .normal, model: "Mac14,2", ecid: "REDACTED")]
+            restoreState = .completed("Restore completed successfully. Target restarted.")
+        default: targetDevices = []
+        }
     }
 
     public func refreshCatalogue() async {

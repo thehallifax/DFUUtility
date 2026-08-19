@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "acceptanceDate": "2026-08-19",
+  "appVersion": "0.5.0",
+  "distributionMode": "Community",
+  "hardware": {
+    "displayName": "MacBook Air M2",
+    "identifier": "Mac14,2"
+  },
+  "results": {
+    "normalDetection": "PASS",
+    "guiEnterDFU": "PASS",
+    "sameECIDVerification": "PASS",
+    "guiRevive": "PASS",
+    "guiRestore": "PASS",
+    "liveProgress": "PASS",
+    "targetRestartVerification": "PASS"
+  },
+  "scopeNote": "This records one tested configuration only. Broader Apple Silicon and Intel T2 coverage remains pending."
+}
