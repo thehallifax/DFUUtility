@@ -13,6 +13,11 @@ struct ContentView: View {
     @State private var confirmRestore = false
     @State private var demoTarget = "None"
 
+    init(model: AppModel) {
+        self.model = model
+        _showVersions = State(initialValue: CommandLine.arguments.contains("--show-version-chooser"))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -47,7 +52,10 @@ struct ContentView: View {
     private var targetCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                if model.targetDevices.isEmpty { Text("No device connected").foregroundStyle(.secondary) }
+                if model.targetDevices.isEmpty {
+                    Text("No target Mac connected").font(.headline)
+                    Text("Connect an Apple Silicon Mac using a USB-C data cable.").foregroundStyle(.secondary)
+                }
                 else if model.targetDevices.count > 1 { Text("Multiple targets detected — disconnect all but one.").foregroundStyle(.orange) }
                 else if let target = model.target {
                     if let name = target.friendlyName { Text(name).font(.title2.bold()) }
@@ -65,7 +73,7 @@ struct ContentView: View {
                     Button("Refresh") { Task { await model.refreshDiagnosticsAndTarget() } }
                 }
                 if !model.isDemoMode && model.privilegeMode == .signedHelper && !model.privilegedHelperState.isReady { helperSetup }
-                if !model.isDemoMode && model.privilegeMode == .community { Text("Community build — administrator authorization is requested only when entering DFU.").font(.caption).foregroundStyle(.secondary) }
+                if !model.isDemoMode && model.privilegeMode == .community, model.target?.state == .normal { Text("Administrator authorization appears only when you click Enter DFU.").font(.caption).foregroundStyle(.secondary) }
                 if model.doctorReport?.status.host.macVDMToolPath == nil { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label("Target Mac", systemImage: "desktopcomputer") }
@@ -100,6 +108,7 @@ struct ContentView: View {
                 }
                 OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.selectedRelease?.version))
                 Button("Restore Mac", role: .destructive) { confirmRestore = true }.disabled(!model.canRestore)
+                Text("Restore erases the target Mac. Revive is intended to repair firmware and recoveryOS without erasing user data.").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     if let log = model.lastLogURL { Button("View Log") { NSWorkspace.shared.open(log) } }
                     Button("Reveal Logs in Finder") { NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DFUUtility")]) }
@@ -173,18 +182,31 @@ struct VersionPicker: View {
             }
             if case .loading = model.catalogueState { ProgressView("Checking Apple…") }
             if model.imageChoices.isEmpty, model.catalogueState != .loading { ContentUnavailableView("No Apple restore images are currently available", systemImage: "externaldrive.badge.questionmark") }
-            List(model.imageChoices) { choice in
-                Button { model.choosePendingRelease(choice.release) } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: model.pendingRelease?.build == choice.release.build ? "largecircle.fill.circle" : "circle")
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack { Text("macOS \(choice.release.version)").font(.headline); if choice.isRecommended { Text("Latest available").font(.caption).padding(.horizontal, 6).padding(.vertical, 2).background(.blue.opacity(0.12), in: Capsule()) } }
-                            Text("Build \(choice.release.build) · \(choice.release.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unknown size")").foregroundStyle(.secondary)
-                            HStack { cacheLabel(choice.cacheState); Text("· \(choice.compatibility.label)").foregroundStyle(.secondary) }.font(.caption)
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(model.imageChoices) { choice in
+                        Button { model.choosePendingRelease(choice.release) } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: model.pendingRelease?.build == choice.release.build ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(.blue)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack { Text("macOS \(choice.release.version)").font(.headline); if choice.isRecommended { Text("Latest available").font(.caption).padding(.horizontal, 6).padding(.vertical, 2).background(.blue.opacity(0.12), in: Capsule()) } }
+                                    Text("Build \(choice.release.build) · \(choice.release.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unknown size")").foregroundStyle(.secondary)
+                                    HStack { cacheLabel(choice.cacheState); Text("· \(choice.compatibility.label)").foregroundStyle(.secondary) }.font(.caption)
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .contentShape(Rectangle())
                         }
-                    }.contentShape(Rectangle())
-                }.buttonStyle(.plain)
+                        .buttonStyle(.plain)
+                        Divider()
+                    }
+                }
             }
+            .background(.background, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
             if let error = model.catalogueErrorMessage { Label(error, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange) }
             HStack {
                 Spacer()

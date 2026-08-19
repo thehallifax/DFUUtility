@@ -353,15 +353,15 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     #expect(HelperStateResolver.resolve(registration: .enabled) == .registered)
     #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 0) == .upgradeRequired(installedProtocol: 0))
     #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 2) == .incompatibleNewer(installedProtocol: 2))
-    #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 1, version: "0.4.0") == .running(version: "0.4.0", protocolVersion: 1))
+    #expect(HelperStateResolver.resolve(registration: .enabled, installedProtocol: 1, version: "0.5.0") == .running(version: "0.5.0", protocolVersion: 1))
     #expect(HelperStateResolver.resolve(registration: .notRegistered) == .notRegistered) // post-uninstall state
 }
 
 @Test func buildVersionAndDiagnosticsMetadataPropagate() throws {
-    #expect(BuildMetadata.displayVersion == "0.4.0 (1)")
+    #expect(BuildMetadata.displayVersion == "0.5.0 (1)")
     #expect(BuildMetadata.helperProtocolVersion == 1)
     let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .signedHelper, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
-    #expect(text.contains("App version: 0.4.0 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+    #expect(text.contains("App version: 0.5.0 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
     #expect(text.contains("Helper registration signing: Unsupported"))
 }
 
@@ -401,10 +401,27 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
 
 @Test func releaseCheckParsesVersionAndRejectsMalformedMetadata() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.4.0")
+    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.5.0")
     let malformed = try temporaryDirectory().appendingPathComponent("Version.env"); try Data("MARKETING_VERSION=bad!\n".utf8).write(to: malformed)
     #expect(try releaseLibrary("validate_version_metadata \"\(malformed.path)\"").0 != 0)
     #expect(try releaseLibrary("metadata_value /definitely/missing MARKETING_VERSION").0 != 0)
+}
+
+@Test func communityHardwareAcceptanceRecordIsCompleteAndVersioned() throws {
+    struct Acceptance: Decodable {
+        struct Hardware: Decodable { let displayName: String; let identifier: String }
+        struct Results: Decodable { let normalDetection, guiEnterDFU, sameECIDVerification, guiRevive, guiRestore, liveProgress, targetRestartVerification: String }
+        let appVersion, distributionMode, acceptanceDate: String
+        let hardware: Hardware; let results: Results
+    }
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let value = try JSONDecoder().decode(Acceptance.self, from: Data(contentsOf: root.appendingPathComponent("Config/HardwareAcceptance.json")))
+    #expect(value.appVersion == BuildMetadata.version); #expect(value.distributionMode == "Community")
+    #expect(value.hardware.displayName == "MacBook Air M2"); #expect(value.hardware.identifier == "Mac14,2")
+    #expect(!value.acceptanceDate.isEmpty)
+    #expect([value.results.normalDetection, value.results.guiEnterDFU, value.results.sameECIDVerification, value.results.guiRevive, value.results.guiRestore, value.results.liveProgress, value.results.targetRestartVerification].allSatisfy { $0 == "PASS" })
+    let releaseCheck = try String(contentsOf: root.appendingPathComponent("scripts/release-check.sh"), encoding: .utf8)
+    #expect(releaseCheck.contains("pass \"Hardware acceptance\"")); #expect(releaseCheck.contains("Hardware coverage"))
 }
 
 @Test func releaseCheckArtifactIdentitySignatureAndResults() throws {

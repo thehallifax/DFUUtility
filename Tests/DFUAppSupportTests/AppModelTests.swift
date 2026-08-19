@@ -225,10 +225,10 @@ private let noOpLogger = AppMockLogger()
 }
 
 @Test @MainActor func realTargetECIDReachesOperationLog() async {
-    let logger = AppMockLogger(), target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xTESTECID00000001")
+    let logger = AppMockLogger(), target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABCDEF123456")
     let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: logger, requiresPrivilegedHelperSetup: false)
     await app.refreshDiagnosticsAndTarget(); await app.enterDFU()
-    #expect(logger.lastECID == "0xTESTECID00000001")
+    #expect(logger.lastECID == "0xABCDEF123456")
 }
 
 private struct SuccessfulPrivilegedRequest: PrivilegedDFURequesting { func enterDFU() throws {} }

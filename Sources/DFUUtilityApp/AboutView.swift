@@ -6,9 +6,11 @@ struct AboutView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("DFUUtility").font(.largeTitle.bold())
             Text("Version \(BuildMetadata.displayVersion)")
+            Text("Community build").font(.headline).foregroundStyle(.secondary)
+            Text("DFUUtility — Apache License 2.0")
             Divider()
-            Text("Third-Party Licenses").font(.title2.bold())
-            Text("macvdmtool — Asahi Linux\nPinned commit: \(BuildMetadata.macVDMToolRevision)\nCopyright 2021 The Asahi Linux Contributors\nApache License 2.0")
+            Text("Third-party software").font(.title2.bold())
+            Text("macvdmtool — Asahi Linux — Apache License 2.0")
             Link("Upstream project", destination: URL(string: "https://github.com/AsahiLinux/macvdmtool")!)
             ScrollView { Text(licenseText).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
             Spacer()
