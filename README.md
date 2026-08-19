@@ -57,7 +57,15 @@ scripts/notarize-app.sh .build/app/DFUUtility.app \
 
 Packaging signs nested code explicitly, enables hardened runtime for Developer ID builds, verifies signatures/Team IDs/entitlements, and creates a ZIP under `.build/distribution/`. It never falls back to ad-hoc signing when an identity was requested. See [signing and distribution](docs/SIGNING_AND_DISTRIBUTION.md) and the [clean-machine acceptance checklist](docs/CLEAN_MACHINE_ACCEPTANCE.md).
 
-Normal use is: connect one target, click **Enter DFU**, approve the standard macOS authorization dialog, download the recommended image if needed, then choose **Revive Mac** or **Restore Mac**. Restore always presents a destructive confirmation. Local operation logs live under `~/Library/Logs/DFUUtility/`.
+Normal use requires no CLI commands:
+
+1. Connect one target and click **Enter DFU**.
+2. Open **Change Version…** to choose from the macOS restore images discovered directly from Apple.
+3. Use the latest available compatible image or explicitly select another version.
+4. Click **Download Image** or **Resume Download** when required.
+5. After automatic validation reports **Image ready**, choose **Revive Mac** or **Restore Mac**.
+
+Downloads come directly from Apple's CDN. Completed images are validated and cached under `~/Library/Caches/DFUUtility/IPSW/`, then reused without another download. The chooser shows downloaded, partial, required, invalid, and validating states. **Choose Local IPSW…** remains available as an advanced fallback and validates the selected file without copying it into the managed cache. Restore always presents a destructive confirmation. Local operation logs live under `~/Library/Logs/DFUUtility/`.
 
 Community builds require no helper setup or background item. A matching Team-ID signed build automatically uses the preserved `SMAppService` helper; only that mode shows **Set Up DFU Helper**. Ready means the registered service has responded with the compatible protocol—not merely that registration was requested. To unregister an old signed helper before removal:
 

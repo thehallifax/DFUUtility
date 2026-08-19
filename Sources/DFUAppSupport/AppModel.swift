@@ -98,6 +98,9 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var catalogueState: CatalogueState = .idle
     @Published public private(set) var availableReleases: [IPSWRelease] = []
     @Published public var selectedRelease: IPSWRelease?
+    @Published public private(set) var imageChoices: [IPSWChoice] = []
+    @Published public private(set) var pendingRelease: IPSWRelease?
+    @Published public private(set) var catalogueErrorMessage: String?
     @Published public private(set) var targetDevices: [DFUDevice] = []
     @Published public private(set) var imageState: ImageState = .none
     @Published public private(set) var downloadState: AppDownloadState = .idle
@@ -107,6 +110,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var lastLogURL: URL?
     @Published public private(set) var privilegedHelperState: PrivilegedHelperState = .notRegistered
     @Published public private(set) var helperRegistrationErrorDetails: String?
+    @Published public private(set) var manualImageURL: URL?
 
     public let isDemoMode: Bool
     public let privilegeMode: PrivilegeMode
@@ -146,6 +150,29 @@ public final class AppModel: ObservableObject {
         }
     }
     public var imageURL: URL? { if case .ready(let url) = imageState { return url }; return nil }
+    public var selectedImagePresentation: SelectedImagePresentation {
+        if let release = selectedRelease {
+            let state = choice(for: release)?.cacheState ?? {
+                switch imageState {
+                case .ready(let url): return .downloaded(url)
+                case .partial(let bytes): return .partial(bytes)
+                case .validating: return .validating
+                case .invalid: return .invalid
+                case .none: return .downloadRequired
+                }
+            }()
+            return .managed(release: release, cacheState: state)
+        }
+        switch imageState {
+        case .ready(let url): return .local(url: url, isValid: true, error: nil)
+        case .invalid(let error): return manualImageURL.map { .local(url: $0, isValid: false, error: error) } ?? .unavailable
+        default: return .unavailable
+        }
+    }
+    public var downloadPresentation: ImageDownloadPresentation? {
+        guard let release = selectedRelease, case .downloading(let completed, let total, let speed) = downloadState else { return nil }
+        return .init(release: release, completed: completed, total: total, bytesPerSecond: speed)
+    }
     public var canEnterDFU: Bool { !isDemoMode && target?.state == .normal && !hasSyntheticProductionIdentity && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && restoreState == .idle }
     private var hasSyntheticProductionIdentity: Bool {
         guard !isDemoMode, let value = target?.ecid?.uppercased() else { return false }
@@ -156,17 +183,31 @@ public final class AppModel: ObservableObject {
 
     public func load() async {
         await refreshDiagnosticsAndTarget()
-        catalogueState = .loading
+        await refreshCatalogue()
+    }
+
+    public func refreshCatalogue() async {
+        catalogueState = .loading; catalogueErrorMessage = nil
         do {
-            availableReleases = try await ipswService.availableImages(for: target)
-            selectedRelease = availableReleases.first; catalogueState = .loaded; refreshSelectedCacheState()
-        } catch { catalogueState = .failed(error.localizedDescription); presentedError = "Apple firmware catalogue could not be reached.\n\(error.localizedDescription)" }
+            availableReleases = AppleIPSWService.sortNewestFirst(try await ipswService.availableImages(for: target))
+            guard !availableReleases.isEmpty else { throw IPSWServiceError.noReleases }
+            if selectedRelease == nil, imageURL == nil { selectedRelease = availableReleases.first }
+            catalogueState = .loaded; refreshSelectedCacheState(); refreshImageChoices()
+        } catch {
+            catalogueErrorMessage = "Apple’s restore catalogue could not be reached. \(error.localizedDescription)"
+            let cached = (try? cache.entries(validator: validator)) ?? []
+            if availableReleases.isEmpty { availableReleases = AppleIPSWService.sortNewestFirst(cached.map(\.release)) }
+            if selectedRelease == nil, imageURL == nil, let usable = cached.first(where: \.isValid) { selectedRelease = usable.release }
+            refreshSelectedCacheState(); refreshImageChoices()
+            catalogueState = .failed(error.localizedDescription)
+            if imageURL == nil { presentedError = "Unable to load Apple restore images.\nCheck your internet connection and try again." }
+        }
     }
 
     public func refreshDiagnosticsAndTarget() async {
         if privilegeMode == .signedHelper { privilegedHelperState = await Task.detached { PrivilegedDFUClient().state() }.value }
         do { doctorReport = try diagnostics.report() } catch { presentedError = error.localizedDescription }
-        do { targetDevices = try discovery.devices() } catch { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
+        do { targetDevices = try discovery.devices(); refreshImageChoices() } catch { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
     }
 
     public func setUpPrivilegedHelper() async {
@@ -186,11 +227,19 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func selectRelease(_ release: IPSWRelease) { selectedRelease = release; refreshSelectedCacheState() }
+    public func beginChoosingVersion() { pendingRelease = selectedRelease ?? availableReleases.first }
+    public func choosePendingRelease(_ release: IPSWRelease) { pendingRelease = release }
+    public func cancelChoosingVersion() { pendingRelease = nil }
+    public func confirmPendingRelease() {
+        guard let release = pendingRelease else { return }
+        selectedRelease = release; pendingRelease = nil; refreshSelectedCacheState(); refreshImageChoices()
+    }
+    public func selectRelease(_ release: IPSWRelease) { selectedRelease = release; refreshSelectedCacheState(); refreshImageChoices() }
 
     public func refreshSelectedCacheState() {
-        guard let release = selectedRelease else { imageState = .none; return }
+        guard let release = selectedRelease else { if imageURL == nil { imageState = .none }; refreshImageChoices(); return }
         if let url = try? cache.validCachedURL(for: release, validator: validator) { imageState = .ready(url); return }
+        if cache.cachedURL(for: release) != nil { imageState = .invalid("The cached image is no longer valid. Download it again."); return }
         let partial = cache.partialURL(for: release)
         let size = ((try? FileManager.default.attributesOfItem(atPath: partial.path)[.size]) as? NSNumber)?.int64Value ?? 0
         imageState = size > 0 ? .partial(size) : .none
@@ -213,23 +262,49 @@ public final class AppModel: ObservableObject {
                 case .completed(let url): downloadState = .idle; imageState = .ready(url)
                 case .cancelled: downloadState = .cancelled; refreshSelectedCacheState()
                 }
+                refreshImageChoices()
             }
         } catch is CancellationError { downloadState = .cancelled; refreshSelectedCacheState() }
-        catch { downloadState = .failed(error.localizedDescription); presentedError = "Image download failed.\n\(error.localizedDescription)"; refreshSelectedCacheState() }
+        catch { downloadState = .failed(error.localizedDescription); imageState = .invalid(error.localizedDescription); presentedError = "Image download failed.\n\(error.localizedDescription)"; refreshImageChoices() }
     }
 
     public func cancelDownload() {
         guard downloadTask != nil else { return }
-        downloadTask?.cancel(); downloadTask = nil; downloadState = .cancelled; refreshSelectedCacheState()
+        downloadTask?.cancel(); downloadTask = nil; downloadState = .cancelled; refreshSelectedCacheState(); refreshImageChoices()
     }
 
     public func validateManualIPSW(_ url: URL) async {
-        imageState = .validating
+        selectedRelease = nil; manualImageURL = url; imageState = .validating; refreshImageChoices()
         do {
             let validator = validator
             try await Task.detached { try validator.validate(url, release: nil, verifyChecksum: false) }.value
-            selectedRelease = nil; imageState = .ready(url)
+            imageState = .ready(url); refreshImageChoices()
         } catch { imageState = .invalid(error.localizedDescription); presentedError = "The selected IPSW is incomplete or invalid.\n\(error.localizedDescription)" }
+    }
+
+    public func choice(for release: IPSWRelease) -> IPSWChoice? { imageChoices.first { $0.release.build == release.build } }
+
+    private func refreshImageChoices() {
+        let visible = availableReleases.filter { release in
+            guard let model = target?.model, !release.supportedDevices.isEmpty else { return true }
+            return release.supportedDevices.contains(model)
+        }
+        imageChoices = visible.enumerated().map { index, release in
+            let compatibility: IPSWCompatibility
+            if release.supportedDevices.isEmpty { compatibility = .universalAppleSilicon }
+            else if let model = target?.model, release.supportedDevices.contains(model) { compatibility = .compatible(model: model) }
+            else { compatibility = .uncertain }
+            return IPSWChoice(release: release, isRecommended: index == 0, cacheState: cacheState(for: release), compatibility: compatibility)
+        }
+    }
+
+    private func cacheState(for release: IPSWRelease) -> IPSWChoiceCacheState {
+        if selectedRelease?.build == release.build, imageState == .validating { return .validating }
+        if let url = try? cache.validCachedURL(for: release, validator: validator) { return .downloaded(url) }
+        if cache.cachedURL(for: release) != nil { return .invalid }
+        let partial = cache.partialURL(for: release)
+        let size = ((try? FileManager.default.attributesOfItem(atPath: partial.path)[.size]) as? NSNumber)?.int64Value ?? 0
+        return size > 0 ? .partial(size) : .downloadRequired
     }
 
     public func enterDFU() async {

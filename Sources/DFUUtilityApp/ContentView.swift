@@ -88,21 +88,15 @@ struct ContentView: View {
     private var restoreCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                switch model.catalogueState {
-                case .idle, .loading: ProgressView("Loading Apple firmware catalogue…")
-                case .failed(let message): Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
-                case .loaded:
-                    if let release = model.selectedRelease {
-                        Text("macOS \(release.version)").font(.title2.bold())
-                        LabeledContent("Build", value: release.build)
-                        LabeledContent("Size", value: formatBytes(release.fileSize))
-                    } else if case .ready(let url) = model.imageState { Text("Local IPSW").font(.title2.bold()); Text(url.lastPathComponent).foregroundStyle(.secondary) }
-                }
+                Text("Selected image").font(.caption).foregroundStyle(.secondary)
+                selectedImageSummary
+                if case .loading = model.catalogueState { ProgressView("Checking Apple…").controlSize(.small) }
+                if let error = model.catalogueErrorMessage { Label(error, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange) }
                 imageStatus
+                downloadControl
                 HStack {
-                    downloadControl
-                    Button("Other Version…") { showVersions = true }.disabled(model.availableReleases.isEmpty)
-                    Button("Choose IPSW…") { showImporter = true }
+                    Button("Change Version…") { model.beginChoosingVersion(); showVersions = true }
+                    Button("Choose Local IPSW…") { showImporter = true }
                 }
                 OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.selectedRelease?.version))
                 Button("Restore Mac", role: .destructive) { confirmRestore = true }.disabled(!model.canRestore)
@@ -115,20 +109,47 @@ struct ContentView: View {
         } label: { Label("macOS Restore", systemImage: "arrow.down.circle") }
     }
 
+    @ViewBuilder private var selectedImageSummary: some View {
+        switch model.selectedImagePresentation {
+        case .unavailable:
+            Text("No macOS image selected").font(.title3.bold())
+        case .managed(let release, _):
+            Text("macOS \(release.version)").font(.title2.bold())
+            LabeledContent("Build", value: release.build)
+            LabeledContent("Size", value: formatBytes(release.fileSize))
+        case .local(let url, _, _):
+            Text("Local IPSW").font(.title2.bold())
+            Text(url.lastPathComponent).font(.headline)
+            Text(url.deletingLastPathComponent().path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+        }
+    }
+
     @ViewBuilder private var imageStatus: some View {
         switch model.imageState {
         case .none: Text("Image status: Not downloaded").foregroundStyle(.secondary)
         case .partial(let bytes): Label("Partial download available (\(formatBytes(bytes)))", systemImage: "arrow.clockwise").foregroundStyle(.orange)
         case .validating: ProgressView("Validating image…")
-        case .ready: Label("Image ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .ready: Label(model.selectedRelease == nil ? "Local image valid" : "Downloaded and validated", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
         case .invalid(let message): Label(message, systemImage: "xmark.circle").foregroundStyle(.red)
         }
     }
 
     @ViewBuilder private var downloadControl: some View {
         switch model.downloadState {
-        case .downloading(let done, let total, let speed):
-            VStack(alignment: .leading) { ProgressView(value: total.map { Double(done) / Double($0) }); Text("\(formatBytes(done)) / \(formatBytes(total))  \(speed.map { formatBytes(Int64($0)) + "/s" } ?? "")").font(.caption.monospacedDigit()); Button("Cancel", role: .cancel) { model.cancelDownload() } }
+        case .downloading:
+            if let value = model.downloadPresentation {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Downloading macOS \(value.release.version)").font(.headline)
+                    ProgressView(value: value.fraction)
+                    HStack {
+                        Text("\(formatBytes(value.completed)) / \(formatBytes(value.total))").font(.caption.monospacedDigit())
+                        Spacer()
+                        if let fraction = value.fraction { Text("\(Int((fraction * 100).rounded()))%").font(.caption.monospacedDigit()) }
+                        if let speed = value.bytesPerSecond { Text("\(formatBytes(Int64(speed)))/s").font(.caption.monospacedDigit()) }
+                    }
+                    Button("Cancel", role: .cancel) { model.cancelDownload() }
+                }
+            }
         case .validating: ProgressView("Validating image…")
         default:
             if model.selectedRelease != nil, model.imageURL == nil { Button(model.imageState.isPartial ? "Resume Download" : "Download Image") { model.beginDownload() } }
@@ -144,14 +165,42 @@ struct VersionPicker: View {
     @ObservedObject var model: AppModel
     @Binding var isPresented: Bool
     var body: some View {
-        VStack(alignment: .leading) {
-            Text("Other Version").font(.title2.bold())
-            List(model.availableReleases, id: \.self) { release in
-                Button { model.selectRelease(release); isPresented = false } label: {
-                    VStack(alignment: .leading) { Text("macOS \(release.version)").font(.headline); Text("Build \(release.build) · \(release.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unknown size")").foregroundStyle(.secondary) }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Choose macOS Version").font(.title2.bold())
+                Spacer()
+                Button { Task { await model.refreshCatalogue(); model.beginChoosingVersion() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(model.catalogueState == .loading)
+            }
+            if case .loading = model.catalogueState { ProgressView("Checking Apple…") }
+            if model.imageChoices.isEmpty, model.catalogueState != .loading { ContentUnavailableView("No Apple restore images are currently available", systemImage: "externaldrive.badge.questionmark") }
+            List(model.imageChoices) { choice in
+                Button { model.choosePendingRelease(choice.release) } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: model.pendingRelease?.build == choice.release.build ? "largecircle.fill.circle" : "circle")
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack { Text("macOS \(choice.release.version)").font(.headline); if choice.isRecommended { Text("Latest available").font(.caption).padding(.horizontal, 6).padding(.vertical, 2).background(.blue.opacity(0.12), in: Capsule()) } }
+                            Text("Build \(choice.release.build) · \(choice.release.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unknown size")").foregroundStyle(.secondary)
+                            HStack { cacheLabel(choice.cacheState); Text("· \(choice.compatibility.label)").foregroundStyle(.secondary) }.font(.caption)
+                        }
+                    }.contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }
-            HStack { Spacer(); Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction) }
-        }.padding().frame(minWidth: 450, minHeight: 320)
+            if let error = model.catalogueErrorMessage { Label(error, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange) }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.cancelChoosingVersion(); isPresented = false }.keyboardShortcut(.cancelAction)
+                Button("Use Version") { model.confirmPendingRelease(); isPresented = false }.keyboardShortcut(.defaultAction).disabled(model.pendingRelease == nil)
+            }
+        }.padding().frame(minWidth: 590, minHeight: 430).onAppear { model.beginChoosingVersion() }
+    }
+
+    @ViewBuilder private func cacheLabel(_ state: IPSWChoiceCacheState) -> some View {
+        switch state {
+        case .downloaded: Label("Downloaded", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .partial(let bytes): Label("Partial · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))", systemImage: "arrow.clockwise").foregroundStyle(.orange)
+        case .downloadRequired: Text("Download required")
+        case .invalid: Label("Invalid cached image", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+        case .validating: ProgressView().controlSize(.mini)
+        }
     }
 }
