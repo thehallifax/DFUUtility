@@ -7,21 +7,56 @@ public enum DeviceState: String, Codable, Sendable {
     case unknown = "Unknown"
 }
 
+public enum AppleDeviceFamily: String, Codable, CaseIterable, Sendable {
+    case mac
+    case iPhone
+    case iPad
+    case unknown
+
+    public var displayName: String {
+        switch self { case .mac: "Mac"; case .iPhone: "iPhone"; case .iPad: "iPad"; case .unknown: "Apple device" }
+    }
+
+    public var restorePlatform: RestorePlatform {
+        switch self {
+        case .mac, .unknown: .macOS
+        case .iPhone: .iOS
+        case .iPad: .iPadOS
+        }
+    }
+}
+
 public struct DFUDevice: Codable, Equatable, Sendable {
+    public var family: AppleDeviceFamily
     public var state: DeviceState
     public var model: String?
     public var identifier: String?
     public var ecid: String?
+    public var productType: String?
+    public var modelIdentifier: String?
+    public var serialNumber: String?
 
-    public init(state: DeviceState, model: String? = nil, identifier: String? = nil, ecid: String? = nil) {
-        self.state = state
+    public init(family: AppleDeviceFamily = .mac, state: DeviceState, model: String? = nil, identifier: String? = nil, ecid: String? = nil, productType: String? = nil, modelIdentifier: String? = nil, serialNumber: String? = nil) {
+        self.family = family; self.state = state
         self.model = model
         self.identifier = identifier
         self.ecid = ecid
+        self.productType = productType ?? model
+        self.modelIdentifier = modelIdentifier ?? (family == .mac ? model : nil)
+        self.serialNumber = serialNumber
     }
 
+    public var restoreProductType: String? { productType ?? modelIdentifier ?? model }
+
     public var friendlyName: String? {
-        switch model { case "Mac14,2": "MacBook Air M2"; default: nil }
+        switch restoreProductType {
+        case "Mac14,2": "MacBook Air M2"
+        case "iPhone7,2": "iPhone 6"
+        case "iPad7,11": "iPad (7th generation)"
+        case "iPhone15,2": "iPhone 14 Pro"
+        case "iPad13,18", "iPad13,19": "iPad (10th generation)"
+        default: family == .unknown ? nil : family.displayName
+        }
     }
 }
 
@@ -60,7 +95,7 @@ public enum DFUError: LocalizedError, Equatable {
         switch self {
         case .unsupportedHost: "The host must be an Apple Silicon Mac."
         case .toolUnavailable(let tool): "Required tool is unavailable: \(tool)."
-        case .noTarget: "No suitable target Mac was detected. Check the data-capable cable and DFU port."
+        case .noTarget: "No suitable target Apple device was detected. Check the data-capable cable and connection mode."
         case .multipleTargets(let count): "Found \(count) possible targets. Disconnect all but one target."
         case .targetNotInDFU: "A target is connected, but it is not in DFU mode."
         case .transitionTimedOut: "The target did not appear in DFU mode before the timeout. Check the cable and DFU port."

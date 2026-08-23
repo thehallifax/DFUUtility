@@ -1,6 +1,6 @@
 # Contributing to DFUUtility
 
-DFUUtility is an early Community beta. Bug reports, focused fixes, documentation improvements, and results from additional Mac models are welcome.
+DFUUtility is a Community project. Bug reports, focused fixes, documentation improvements, and results from additional Apple device models are welcome.
 
 Report bugs and request enhancements through the [DFUUtility issue tracker](https://github.com/thehallifax/DFUUtility/issues).
 
@@ -13,7 +13,7 @@ Report bugs and request enhancements through the [DFUUtility issue tracker](http
 
 Never publish administrator credentials, Apple IDs, local usernames, home-directory paths, serial numbers, ECIDs, or other device identifiers. Redact those values from screenshots, diagnostics, and logs before attaching them.
 
-An effective report includes the DFUUtility version/build, host macOS and hardware, target model identifier, target state, expected and observed behavior, reproducible steps, and sanitized logs. State explicitly whether any destructive Restore operation was involved.
+An effective report includes the DFUUtility version/build, host macOS version and hardware, target product type and state, cable type when DFU is involved, expected and observed behavior, reproducible steps, and sanitized diagnostics or logs. State explicitly whether any destructive Restore operation was involved.
 
 ## Development workflow
 

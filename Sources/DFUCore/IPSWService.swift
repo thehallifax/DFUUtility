@@ -1,8 +1,19 @@
 import Foundation
 
-public enum SigningStatus: String, Codable, Sendable { case unknown }
+public enum RestorePlatform: String, Codable, CaseIterable, Sendable {
+    case macOS, iOS, iPadOS
+    public var displayName: String { rawValue }
+}
+
+public enum SigningStatus: String, Codable, Sendable {
+    case unknown
+    /// Listed in Apple's restore catalogue. This is deliberately not named
+    /// "signed" or "current" because the feed contains historical entries.
+    case appleCatalogue
+}
 
 public struct IPSWRelease: Codable, Hashable, Sendable {
+    public let platform: RestorePlatform
     public let version: String
     public let build: String
     public let downloadURL: URL
@@ -11,13 +22,23 @@ public struct IPSWRelease: Codable, Hashable, Sendable {
     public let supportedDevices: [String]
     public let signingStatus: SigningStatus?
 
-    public init(version: String, build: String, downloadURL: URL, fileSize: Int64? = nil, checksum: String? = nil, supportedDevices: [String] = [], signingStatus: SigningStatus? = .unknown, isSigned: Bool? = nil) {
-        self.version = version; self.build = build; self.downloadURL = downloadURL
+    public init(platform: RestorePlatform = .macOS, version: String, build: String, downloadURL: URL, fileSize: Int64? = nil, checksum: String? = nil, supportedDevices: [String] = [], signingStatus: SigningStatus? = .unknown, isSigned: Bool? = nil) {
+        self.platform = platform; self.version = version; self.build = build; self.downloadURL = downloadURL
         self.fileSize = fileSize; self.checksum = checksum; self.supportedDevices = supportedDevices
         self.signingStatus = signingStatus
     }
 
     public var isSigned: Bool? { nil }
+
+    private enum CodingKeys: String, CodingKey { case platform, version, build, downloadURL, fileSize, checksum, supportedDevices, signingStatus }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        platform = try values.decodeIfPresent(RestorePlatform.self, forKey: .platform) ?? .macOS
+        version = try values.decode(String.self, forKey: .version); build = try values.decode(String.self, forKey: .build)
+        downloadURL = try values.decode(URL.self, forKey: .downloadURL); fileSize = try values.decodeIfPresent(Int64.self, forKey: .fileSize)
+        checksum = try values.decodeIfPresent(String.self, forKey: .checksum); supportedDevices = try values.decodeIfPresent([String].self, forKey: .supportedDevices) ?? []
+        signingStatus = try values.decodeIfPresent(SigningStatus.self, forKey: .signingStatus)
+    }
 }
 
 public struct DownloadProgress: Sendable { public let received: Int64; public let total: Int64?; public let bytesPerSecond: Double; public let resumed: Bool }
@@ -63,7 +84,7 @@ public enum IPSWServiceError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .malformedCatalogue(let reason): "Apple IPSW catalogue is malformed: \(reason)"
-        case .noReleases: "Apple's catalogue contains no applicable macOS restore images."
+        case .noReleases: "Apple's catalogue contains no applicable restore images."
         case .unknownBuild(let build): "No discovered IPSW has build \(build)."
         case .untrustedURL(let url): "Refusing non-Apple firmware URL: \(url)"
         case .http(let status): "Apple download server returned HTTP \(status)."
@@ -74,21 +95,28 @@ public enum IPSWServiceError: LocalizedError, Equatable {
 }
 
 public struct AppleIPSWService: IPSWService {
-    private let catalogue: any IPSWCatalogueFetching; private let downloader: any IPSWDownloading
+    private let catalogue: any IPSWCatalogueFetching; private let mobileCatalogue: any IPSWCatalogueFetching; private let downloader: any IPSWDownloading
     private let cache: IPSWCache; private let validator: any IPSWValidating
-    public init(catalogue: any IPSWCatalogueFetching = AppleIPSWCatalogue(), downloader: any IPSWDownloading = AppleIPSWDownloader(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator()) {
-        self.catalogue = catalogue; self.downloader = downloader; self.cache = cache; self.validator = validator
+    public init(catalogue: any IPSWCatalogueFetching = AppleIPSWCatalogue(), mobileCatalogue: (any IPSWCatalogueFetching)? = nil, downloader: any IPSWDownloading = AppleIPSWDownloader(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator()) {
+        self.catalogue = catalogue; self.mobileCatalogue = mobileCatalogue ?? AppleMobileIPSWCatalogue(); self.downloader = downloader; self.cache = cache; self.validator = validator
     }
     public func availableImages(for device: DFUDevice?) async throws -> [IPSWRelease] {
-        let releases = try await catalogue.releases()
-        let filtered = device?.model.map { model in releases.filter { $0.supportedDevices.isEmpty || $0.supportedDevices.contains(model) } } ?? releases
+        let source: any IPSWCatalogueFetching = switch device?.family {
+        case .iPhone, .iPad: mobileCatalogue
+        default: catalogue
+        }
+        let releases = try await source.releases()
+        let familyFiltered = releases.filter { release in
+            device.map { release.platform == $0.family.restorePlatform } ?? true
+        }
+        let filtered = device?.restoreProductType.map { model in familyFiltered.filter { !$0.supportedDevices.isEmpty && $0.supportedDevices.contains(model) } } ?? familyFiltered
         return Self.sortNewestFirst(filtered)
     }
     public func recommendedImage(for device: DFUDevice?) async throws -> IPSWRelease {
         guard let first = try await availableImages(for: device).first else { throw IPSWServiceError.noReleases }; return first
     }
     public func download(_ release: IPSWRelease, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws -> URL {
-        try cache.prepare()
+        try cache.prepare(for: release)
         if let hit = try cache.validCachedURL(for: release, validator: validator) { return hit }
         let partial = cache.partialURL(for: release)
         try await downloader.download(release, to: partial, progress: progress)
@@ -100,7 +128,7 @@ public struct AppleIPSWService: IPSWService {
             let task = Task {
                 continuation.yield(.started(release: release))
                 do {
-                    try cache.prepare()
+                    try cache.prepare(for: release)
                     if let hit = try cache.validCachedURL(for: release, validator: validator) { continuation.yield(.completed(url: hit)); continuation.finish(); return }
                     let partial = cache.partialURL(for: release)
                     let existing = ((try? FileManager.default.attributesOfItem(atPath: partial.path)[.size]) as? NSNumber)?.int64Value ?? 0

@@ -1,0 +1,9 @@
+# Sanitized from a real iPhone 6 / iPhone7,2 dfuctl status capture on 2026-08-22.
+Target:
+  Connected: Yes
+  Family: iPhone
+  State: Normal
+  Product: iPhone7,2
+  Identifier: SYNTHETIC-IPHONE7-2-UDID
+  Serial: SYNTHETIC-SERIAL
+  ECID: 0x1234567890ABCDEF

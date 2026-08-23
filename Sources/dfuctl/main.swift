@@ -46,7 +46,7 @@ struct DFUCLI {
         let service = AppleIPSWService(), cache = IPSWCache(), validator = IPSWValidator()
         let release = try await service.recommendedImage(for: devices[0])
         var url = try cache.validCachedURL(for: release, validator: validator)
-        print("Target:\n\(devices[0].model ?? "Unknown")\nECID: \(devices[0].ecid ?? "Unknown")\nRestore image:\nmacOS \(release.version) (\(release.build))")
+        print("Target:\n\(devices[0].friendlyName ?? devices[0].family.displayName)\nProduct: \(devices[0].restoreProductType ?? "Unknown")\nECID: \(devices[0].ecid ?? "Unknown")\nRestore image:\n\(release.platform.displayName) \(release.version) (\(release.build))")
         if url == nil {
             guard arguments.contains("--download") else { throw DFUError.invalidIPSW("The recommended image is not cached. Run `dfuctl ipsw download latest` or repeat with `dfuctl restore --download`.") }
             print("Downloading the explicitly requested image…")
@@ -55,7 +55,7 @@ struct DFUCLI {
             }
             FileHandle.standardError.write(Data("\n".utf8))
         } else { print("✓ Cached and validated") }
-        print("WARNING: Restore will erase the target Mac.\nContinue? [y/N] ", terminator: "")
+        print("WARNING: Restore will erase the target \(devices[0].family.displayName).\nContinue? [y/N] ", terminator: "")
         guard let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), answer == "y" || answer == "yes" else { throw CancellationError() }
         try RestoreEngine().perform(.restore(url!))
     }
@@ -63,20 +63,23 @@ struct DFUCLI {
     static func ipsw(_ arguments: [String]) async throws {
         guard let command = arguments.first else { usage(exitCode: 64) }
         let service = AppleIPSWService(), cache = IPSWCache(), validator = IPSWValidator()
+        let detected = try ConfiguratorDeviceDiscovery().devices()
+        guard detected.count <= 1 else { throw DFUError.multipleTargets(detected.count) }
+        let target = detected.first
         switch command {
         case "list":
-            let verbose = arguments.contains("--verbose"), releases = try await service.availableImages(for: nil)
-            print("Available macOS IPSWs")
+            let verbose = arguments.contains("--verbose"), releases = try await service.availableImages(for: target)
+            print("Available \(target.map { platformName($0.family) } ?? "macOS") IPSWs")
             for release in releases {
-                print("macOS \(release.version)\nBuild: \(release.build)\nSize: \(formatBytes(release.fileSize))\nURL: Apple\nStatus: Available")
+                print("\(release.platform.displayName) \(release.version)\nBuild: \(release.build)\nSize: \(formatBytes(release.fileSize))\nURL: Apple\nStatus: Listed in Apple catalogue (signing/current status not asserted)")
                 if verbose { print("Models: \(release.supportedDevices.joined(separator: ", "))\nDownload: \(release.downloadURL.absoluteString)\nSHA-1: \(release.checksum ?? "Not supplied")") }
                 print()
             }
         case "latest":
-            let release = try await service.recommendedImage(for: nil), cached = try cache.validCachedURL(for: release, validator: validator) != nil
-            print("Latest macOS restore image\nVersion: \(release.version)\nBuild: \(release.build)\nSize: \(formatBytes(release.fileSize))\nCached: \(cached ? "Yes" : "No")")
+            let release = try await service.recommendedImage(for: target), cached = try cache.validCachedURL(for: release, validator: validator) != nil
+            print("Latest \(release.platform.displayName) restore image\nVersion: \(release.version)\nBuild: \(release.build)\nSize: \(formatBytes(release.fileSize))\nCached: \(cached ? "Yes" : "No")")
         case "download":
-            let releases = try await service.availableImages(for: nil); let release: IPSWRelease
+            let releases = try await service.availableImages(for: target); let release: IPSWRelease
             if arguments.dropFirst().first == "latest" { guard let first = releases.first else { throw IPSWServiceError.noReleases }; release = first }
             else if let index = arguments.firstIndex(of: "--build"), arguments.indices.contains(index + 1) {
                 let build = arguments[index + 1]; guard let found = releases.first(where: { $0.build == build }) else { throw IPSWServiceError.unknownBuild(build) }; release = found
@@ -85,7 +88,7 @@ struct DFUCLI {
             var completedURL: URL?
             for try await event in service.downloadEvents(release) {
                 switch event {
-                case .started: print("Downloading macOS \(release.version) (\(release.build))")
+                case .started: print("Downloading \(release.platform.displayName) \(release.version) (\(release.build))")
                 case .resumed(let bytes): print("Found partial download: \(formatBytes(bytes))\nResuming…")
                 case .progress(let completed, let total, let speed):
                     let percent = total.map { $0 > 0 ? " \(Int(Double(completed) / Double($0) * 100))%" : "" } ?? ""
@@ -99,7 +102,7 @@ struct DFUCLI {
         case "cache":
             let entries = try cache.entries(validator: validator); print("Cached IPSWs")
             if entries.isEmpty { print("None") }
-            for entry in entries { print("macOS \(entry.release.version)\nBuild: \(entry.release.build)\nSize: \(formatBytes(entry.release.fileSize))\nPath:\n\(entry.url.path)\nStatus: \(entry.isValid ? "Valid" : "Invalid")\n") }
+            for entry in entries { print("\(entry.release.platform.displayName) \(entry.release.version)\nBuild: \(entry.release.build)\nSize: \(formatBytes(entry.release.fileSize))\nPath:\n\(entry.url.path)\nStatus: \(entry.isValid ? "Valid" : "Invalid")\n") }
         case "clean":
             let partials = arguments.contains("--partials"), invalid = arguments.contains("--invalid")
             guard partials || invalid else { FileHandle.standardError.write(Data("Specify --partials and/or --invalid; valid IPSWs are never removed.\n".utf8)); exit(64) }
@@ -111,7 +114,7 @@ struct DFUCLI {
     static func printStatus(_ status: UtilityStatus) {
         print("Host:\n  Apple Silicon: \(status.host.isAppleSilicon ? "Yes" : "No")\n  macOS: \(status.host.macOSVersion)\n  macvdmtool: \(status.host.macVDMToolPath == nil ? "Unavailable" : "Available")\n  cfgutil: \(status.host.cfgutilPath == nil ? "Unavailable" : "Available")\nTarget:\n  Connected: \(status.targets.isEmpty ? "No" : "Yes")")
         if status.targets.isEmpty { print("  State: Unknown") }
-        for device in status.targets { print("  State: \(device.state.rawValue)"); if let model = device.model { print("  Model: \(model)") }; if let id = device.identifier { print("  Identifier: \(id)") }; if let ecid = device.ecid { print("  ECID: \(ecid)") } }
+        for device in status.targets { print("  Family: \(device.family.displayName)\n  State: \(device.state.rawValue)"); if let product = device.restoreProductType { print("  Product: \(product)") }; if let id = device.identifier { print("  Identifier: \(id)") }; if let serial = device.serialNumber { print("  Serial: \(serial)") }; if let ecid = device.ecid { print("  ECID: \(ecid)") } }
     }
     static func printTarget(_ devices: [DFUDevice]) {
         print("  Connected: \(devices.isEmpty ? "No" : "Yes")")
@@ -126,6 +129,7 @@ struct DFUCLI {
     }
     static func formatBytes(_ value: Int64?) -> String { guard let value else { return "Unknown" }; return ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
     static func formatRate(_ value: Double) -> String { value > 0 ? "\(ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .file))/s" : "" }
+    static func platformName(_ family: AppleDeviceFamily) -> String { switch family { case .iPhone: "iOS"; case .iPad: "iPadOS"; default: "macOS" } }
     static func usage(exitCode: Int32) -> Never {
         let text = "Usage:\n  dfuctl doctor | status | dfu | revive | reboot\n  dfuctl restore                       # recommended cached image; prompts\n  dfuctl restore --download            # explicitly permits download; prompts\n  dfuctl restore /path/to/image.ipsw   # scripting form; ERASES target\n  dfuctl ipsw list [--verbose]\n  dfuctl ipsw latest\n  dfuctl ipsw download latest | --build BUILD\n  dfuctl ipsw cache\n  dfuctl ipsw clean --partials [--invalid]"
         (exitCode == 0 ? FileHandle.standardOutput : FileHandle.standardError).write(Data((text + "\n").utf8)); exit(exitCode)

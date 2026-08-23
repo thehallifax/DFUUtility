@@ -1,10 +1,10 @@
 import Foundation
 
 public enum RestoreAction: Sendable, Equatable {
-    case restore(URL), revive, reboot
+    case restore(URL), targetedRestore(URL, ecid: String), revive, targetedRevive(ecid: String), reboot
 
     public var operationName: String {
-        switch self { case .restore: "Restore"; case .revive: "Revive"; case .reboot: "Restart" }
+        switch self { case .restore, .targetedRestore: "Restore"; case .revive, .targetedRevive: "Revive"; case .reboot: "Restart" }
     }
 }
 
@@ -139,31 +139,37 @@ public struct RestoreEngine: Sendable {
     }
 
     public func validateIPSW(_ url: URL) throws {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { throw DFUError.invalidIPSW("file does not exist") }
         guard url.pathExtension.lowercased() == "ipsw" else { throw DFUError.invalidIPSW("expected a .ipsw file") }
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard (attributes[.size] as? NSNumber)?.int64Value ?? 0 > 1_000_000 else { throw DFUError.invalidIPSW("file is implausibly small") }
-        let listing = try runner.run(URL(fileURLWithPath: "/usr/bin/unzip"), arguments: ["-Z1", url.path])
-        guard listing.status == 0 else { throw DFUError.invalidIPSW("ZIP directory is unreadable: \(listing.stderrString)") }
-        guard listing.stdoutString.contains("BuildManifest.plist"), listing.stdoutString.contains("Restore.plist") else { throw DFUError.invalidIPSW("missing BuildManifest.plist or Restore.plist") }
+        try IPSWValidator(runner: runner).validate(url, release: nil, verifyChecksum: false)
     }
 
     public func command(for action: RestoreAction) throws -> (URL, [String], DFUDevice) {
         guard let cfgutil else { throw DFUError.toolUnavailable("cfgutil (install Apple Configurator Automation Tools)") }
-        if case .restore(let url) = action { try validateIPSW(url) }
+        let restoreURL: URL? = switch action { case .restore(let url), .targetedRestore(let url, _): url; default: nil }
+        if let restoreURL { try validateIPSW(restoreURL) }
         let devices = try discovery.devices()
         guard !devices.isEmpty else { throw DFUError.noTarget }
-        guard devices.count == 1 else { throw DFUError.multipleTargets(devices.count) }
-        let target = devices[0]
+        let requestedECID: String? = switch action { case .targetedRestore(_, let ecid), .targetedRevive(let ecid): ecid; default: nil }
+        let candidates = requestedECID.map { wanted in devices.filter { $0.ecid == wanted } } ?? devices
+        guard candidates.count == 1 else { throw DFUError.multipleTargets(devices.count) }
+        let target = candidates[0]
+        if let restoreURL, (target.family == .iPhone || target.family == .iPad) {
+            guard let product = target.restoreProductType else { throw DFUError.invalidIPSW("the selected mobile target does not expose a product type") }
+            let platform: RestorePlatform = target.family == .iPhone ? .iOS : .iPadOS
+            let compatibility = IPSWRelease(platform: platform, version: "Local", build: "Local", downloadURL: restoreURL, supportedDevices: [product])
+            try IPSWValidator(runner: runner).validate(restoreURL, release: compatibility, verifyChecksum: false)
+        }
         switch action {
-        case .restore where target.state != .dfu: throw DFUError.targetNotInDFU
-        case .revive where target.state != .dfu && target.state != .recovery: throw DFUError.targetNotInDFU
-        default: break
+        case .restore, .targetedRestore:
+            guard target.state == .dfu else { throw DFUError.targetNotInDFU }
+        case .revive, .targetedRevive:
+            let valid = target.family == .mac ? (target.state == .dfu || target.state == .recovery) : target.state == .recovery
+            guard valid else { throw DFUError.targetNotInDFU }
+        case .reboot: break
         }
         var arguments = ["--progress", "--verbose", "--timeout", "30"]
         if let ecid = target.ecid, !ecid.isEmpty { arguments += ["--ecid", ecid] }
-        switch action { case .restore(let url): arguments += ["restore", "--ipsw", url.path]; case .revive: arguments += ["revive"]; case .reboot: arguments += ["restart"] }
+        switch action { case .restore(let url), .targetedRestore(let url, _): arguments += ["restore", "--ipsw", url.path]; case .revive, .targetedRevive: arguments += ["revive"]; case .reboot: arguments += ["restart"] }
         return (cfgutil, arguments, target)
     }
 

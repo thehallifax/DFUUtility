@@ -1,45 +1,59 @@
 # DFUUtility
 
-DFUUtility is a free, open-source native macOS utility for placing a supported Mac in DFU mode, then reviving or restoring it with Apple Configurator. It combines target detection, Apple IPSW discovery and caching, safety checks, and live `cfgutil` progress in one SwiftUI app.
+DFUUtility is an open-source native macOS utility for entering supported Macs into DFU mode and restoring or reviving Apple devices with Apple IPSWs.
 
-> **Community beta:** Version 0.5.0 has been hardware-tested on a MacBook Air M2 (Mac14,2). Broader Apple Silicon and Intel T2 coverage is pending. Community builds are built locally and ad-hoc signed; there is no notarized binary release yet.
+![DFUUtility with a connected Mac](docs/images/normal-mac.png)
+
+Version 0.6.0 adds focused iPhone and iPad support, guided physical-button DFU assistance, and managed iOS/iPadOS firmware downloads. Community builds are local and ad-hoc signed; no paid Apple Developer account is required.
 
 ## Features
 
-- Detects a single connected target in Normal, Recovery, or DFU state.
-- Enters DFU with macOS-provided administrator authorization and verifies the same ECID after transition.
-- Discovers compatible restore images directly from Apple, downloads with resume support, validates them, and reuses a managed cache.
-- Provides a native macOS version chooser and local IPSW fallback.
-- Revives or restores through Apple Configurator's `cfgutil`, with real stage-local progress and operation logs.
-- Bundles the pinned `macvdmtool` dependency; users do not install it separately.
-- Includes a safe demo mode that cannot invoke hardware tools.
+### Mac
+
+- Detect Normal, Recovery, and DFU targets and preserve the target ECID across transitions.
+- Enter DFU using the bundled `macvdmtool` and standard macOS administrator authorization.
+- Restore or Revive through Apple Configurator with real stage-local progress and operation logs.
+
+### iPhone and iPad
+
+- Discover mobile targets and retain product type and ECID metadata.
+- Guide supported physical-button DFU sequences without sending device commands.
+- Require same-ECID DFU enumeration before reporting success.
+- Restore compatible validated IPSWs with destructive confirmation and live progress.
+
+### Firmware management
+
+- Discover compatible Apple macOS, iOS, and iPadOS restore images.
+- Resume downloads, validate integrity and archive structure, and reuse a platform-separated cache.
+- Inspect storage, reveal files, resume partials, and confirm removal in **Manage Downloads…**.
+- Select a local IPSW without placing it under DFUUtility's cache management.
+
+### Safety
+
+- Explicit target selection when multiple devices are attached.
+- Product compatibility and IPSW validation gates before Restore.
+- Separate native destructive confirmation; Restore never begins from DFU detection alone.
+- Demo and screenshot modes cannot invoke hardware operations.
 
 ## Screenshots
 
-| Normal target | DFU target |
+| Guided iPhone DFU | Guided iPad DFU |
 | --- | --- |
-| ![Normal target connected](docs/images/normal-target.png) | ![Target in DFU](docs/images/dfu-target.png) |
+| ![iPhone 6 guided DFU](docs/images/iphone-guided-dfu.png) | ![iPad guided DFU](docs/images/ipad-guided-dfu.png) |
 
-| Version chooser | Live progress | Completed operation |
+| Firmware chooser | Download progress | Restore progress |
 | --- | --- | --- |
-| ![macOS version chooser](docs/images/version-chooser.png) | ![Live revive progress](docs/images/live-progress.png) | ![Completed revive](docs/images/completed-operation.png) |
+| ![Compatible firmware chooser](docs/images/firmware-chooser.png) | ![Firmware download progress](docs/images/download-progress.png) | ![Structured Restore progress](docs/images/restore-progress.png) |
 
-Screenshots use deterministic demo data and contain no real ECIDs, usernames, or private paths.
+| Manage Downloads | Completed Restore |
+| --- | --- |
+| ![Managed firmware cache](docs/images/manage-downloads.png) | ![Completed Restore and returned target](docs/images/completed-restore.png) |
 
-## Requirements
+All screenshots use deterministic fictional data; they contain no real device or user identifiers.
 
-- macOS 14 or newer on the host Mac.
-- An Apple Silicon host for the currently supported **Enter DFU** workflow.
-- [Apple Configurator](https://apps.apple.com/app/apple-configurator/id1037126344), which supplies `cfgutil` for discovery, revive, and restore.
-- A USB-C data cable and the correct DFU port/procedure for the target Mac.
-- Internet access for automatic IPSW discovery and download.
-- Administrator authorization when **Enter DFU** is clicked; DFUUtility never reads or stores the password.
+## Installation
 
-No Apple Developer Program membership is required for a Community build.
-
-## Install
-
-Clone or download the repository, then use the local installer from its root:
+Requirements: macOS 14 or newer, [Apple Configurator](https://apps.apple.com/app/apple-configurator/id1037126344), a data-capable cable, and internet access for automatic firmware downloads. The current Mac DFU workflow requires an Apple Silicon host. Administrator authorization is requested only when entering a Mac into DFU.
 
 ```sh
 git clone https://github.com/thehallifax/DFUUtility.git
@@ -47,122 +61,74 @@ cd DFUUtility
 scripts/install-local.sh
 ```
 
-Open `/Applications/DFUUtility.app`. Use `scripts/install-local.sh --skip-tests` only when the tests have already passed.
-
-To remove the locally installed app:
-
-```sh
-scripts/uninstall-local.sh
-```
+Open `/Applications/DFUUtility.app`. To uninstall the local build, run `scripts/uninstall-local.sh`.
 
 ## Usage
 
-1. Connect exactly one target Mac with a USB-C data cable.
-2. If it is in Normal state, click **Enter DFU** and approve the standard macOS authorization prompt.
-3. Choose an Apple restore image with **Change Version…**, or select a local IPSW.
-4. Download and validate the image if necessary.
-5. Choose **Revive Mac** or **Restore Mac**.
+1. Connect the target with a data-capable cable and select it if more than one device is attached.
+2. Choose compatible Apple firmware with **Change Version…**, or use **Choose Local IPSW…**.
+3. Download and validate the image if needed.
+4. Enter DFU: Mac entry is initiated by the app; supported iPhone/iPad entry follows the guided physical-button assistant.
+5. Choose Revive where supported, or confirm Restore.
 
-Images downloaded from Apple's CDN are stored under `~/Library/Caches/DFUUtility/IPSW/`. Operation logs are stored under `~/Library/Logs/DFUUtility/` and remain available through **View Log**.
+> **Restore erases the target device.** Back up recoverable data first. Restore does not bypass Activation Lock, ownership, enrollment, or setup requirements. Revive is not a backup and offers no data-preservation guarantee.
 
-## Community vs Signed Builds
+## Tested hardware
 
-The Community path builds locally, uses an ad-hoc signature, and asks macOS to run only the bundled `macvdmtool dfu` command with administrator privileges through the system authorization UI. It does not use Terminal, interactive `sudo`, `sudo -S`, a custom password field, setuid, or a background helper.
+| Device | Product | Detection | Guided DFU | Restore/Revive |
+| --- | --- | --- | --- | --- |
+| MacBook Air M2 | `Mac14,2` | Normal/DFU: PASS | GUI same-ECID DFU: PASS | Restore and Revive: PASS |
+| iPhone 6 | `iPhone7,2` | Normal/Recovery/DFU: PASS | Same-ECID DFU: PASS | End-to-end Restore: PASS |
+| iPad (7th generation) Wi-Fi | `iPad7,11` | Normal/DFU: PASS; Recovery: pending | Same-ECID DFU: PASS | Destructive Restore: not tested |
 
-A future Developer ID distribution uses the embedded `SMAppService` privileged helper. That architecture requires matching Team-ID signatures, hardened runtime, notarization, and clean-machine acceptance. See [Signing and distribution](docs/SIGNING_AND_DISTRIBUTION.md) and [Privileged helper architecture](docs/PRIVILEGED_HELPER.md).
+For `iPad7,11`, compatible iPadOS discovery, GUI download, and IPSW validation also passed on real hardware. The authoritative, deliberately scoped record is [Config/HardwareAcceptance.json](Config/HardwareAcceptance.json).
 
-## Hardware Tested
+## Older Lightning troubleshooting
 
-Community GUI acceptance on **MacBook Air M2 (Mac14,2)** with DFUUtility 0.5.0:
+If an older Lightning device repeatedly lands in Recovery with direct USB-C to Lightning, try USB-A to Lightning through a USB-C adapter or hub. This helped the tested iPhone 6; it is troubleshooting guidance, not a universal requirement. Testing has not established that USB-A is required for the iPad.
 
-- Normal target detection: PASS
-- GUI Enter DFU and same-ECID verification: PASS
-- GUI Revive: PASS
-- GUI Restore: PASS
-- Live `cfgutil` progress: PASS
-- Target restart verification: PASS
+## Firmware cache
 
-The machine-readable record is [Config/HardwareAcceptance.json](Config/HardwareAcceptance.json). This result does not imply coverage of every Apple Silicon or Intel T2 model.
-
-## Safety
-
-> **Restore erases the target Mac.** It requires a validated image, exactly one positively detected real DFU target, and a separate native destructive confirmation.
-
-Revive is intended to repair firmware and recoveryOS without erasing user data, but it is not a backup and no data-preservation guarantee is made. Downloads, image validation, navigation, and demo mode cannot start a device operation.
+Managed downloads live under `~/Library/Caches/DFUUtility/IPSW/`, separated by platform. **Manage Downloads…** shows total storage, validation state and failure detail, and offers Reveal, Resume, and confirmed Remove actions. Operation logs live under `~/Library/Logs/DFUUtility/` and are available through **View Log**.
 
 ## CLI
 
-Build and inspect the host:
+```sh
+swift build -c release
+.build/release/dfuctl doctor
+.build/release/dfuctl status
+.build/release/dfuctl ipsw list
+.build/release/dfuctl ipsw cache
+```
+
+Explicit hardware commands are `.build/release/dfuctl dfu`, `.build/release/dfuctl revive`, and `.build/release/dfuctl restore /path/to/Restore.ipsw`. Restore is destructive. The CLI's safe privilege behavior is documented in [Privileged helper architecture](docs/PRIVILEGED_HELPER.md).
+
+## Build from source
 
 ```sh
 swift build
 swift test
 swift build -c release
-.build/release/dfuctl doctor
-.build/release/dfuctl status
-```
-
-IPSW management:
-
-```sh
-.build/release/dfuctl ipsw list
-.build/release/dfuctl ipsw latest
-.build/release/dfuctl ipsw cache
-.build/release/dfuctl ipsw download latest
-.build/release/dfuctl ipsw clean --partials
-```
-
-Explicit device operations:
-
-```sh
-sudo .build/release/dfuctl dfu
-.build/release/dfuctl revive
-.build/release/dfuctl restore /path/to/UniversalMac_Restore.ipsw
-```
-
-Restore is destructive and never runs unless explicitly invoked. Helper lookup precedence is the app-bundled copy, `DFUCTL_MACVDMTOOL_PATH`, the SwiftPM-built sibling, `/opt/homebrew/bin`, then `/usr/local/bin`.
-
-## Development
-
-Run the SwiftUI app directly:
-
-```sh
-swift run DFUUtility
-```
-
-Run deterministic demo mode without hardware access:
-
-```sh
-swift run DFUUtility --demo
-```
-
-Package and verify the Community app:
-
-```sh
 scripts/package-app.sh release
 scripts/verify-app.sh .build/app/DFUUtility.app
-scripts/release-check.sh
 ```
 
-`release-check.sh` builds and tests, runs only read-only CLI commands, packages and verifies the app, checks metadata and licensing, and prints the ZIP SHA-256. It never enters DFU, revives, restores, downloads an IPSW, changes helper registration, or requests authorization. `--strict` additionally requires a clean worktree.
+Run `swift run DFUUtility --demo` for a hardware-inert demo. `scripts/release-check.sh` performs builds, tests, read-only CLI smoke checks, packaging, metadata, license, signature, acceptance, screenshot, and ZIP checks; it never enters DFU, restores, revives, authorizes, or downloads firmware.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and reporting guidance. Release details are in [0.5.0 release notes](docs/RELEASE_NOTES_0.5.0.md).
+## Security and privilege model
 
-## Known Limitations
+Community builds invoke only the bundled `macvdmtool dfu` operation through macOS's standard administrator UI. DFUUtility never reads or stores a password and does not use interactive `sudo`, setuid, or a custom password dialog. A future Developer ID distribution can use the embedded `SMAppService` privileged helper with matching Team-ID signatures, hardened runtime, and notarization. See [Signing and distribution](docs/SIGNING_AND_DISTRIBUTION.md).
 
-- Hardware validation is limited to MacBook Air M2 (Mac14,2); broader Apple Silicon and Intel T2 testing remains pending.
-- Community builds are local, ad-hoc builds. No notarized binary is distributed.
-- Apple Configurator and its `cfgutil` executable remain required.
-- Only a single connected target is supported.
-- Apple MobileAsset catalogue data is an operational interface rather than a versioned public SDK. `cfgutil` makes the final compatibility and personalization determination.
-- Progress is real and stage-local; DFUUtility does not fabricate an overall percentage. Active operation cancellation is not offered until it is hardware-tested safely.
+Apple Configurator's `cfgutil` remains required for device discovery, Restore, and Revive. Mobile DFU requires physical button input and is hardware validated only for the products listed above.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.6.0 release notes](docs/RELEASE_NOTES_0.6.0.md) for release details.
 
 ## License
 
-DFUUtility is licensed under the [Apache License 2.0](LICENSE). The public repository is [thehallifax/DFUUtility](https://github.com/thehallifax/DFUUtility).
+DFUUtility is licensed under the [Apache License 2.0](LICENSE).
 
-This project license does not transfer ownership of or relicense bundled third-party software. Third-party components retain their upstream copyright, attribution, and license notices.
+## Third-party software
 
-## Third-party licenses
-
-DFUUtility bundles the upstream [Asahi Linux macvdmtool](https://github.com/AsahiLinux/macvdmtool) project at commit `b22ae51eb43a0e1daa21d41616ac899f28e7bf8a`. It is Copyright 2021 The Asahi Linux Contributors, incorporates credited work from ThunderboltPatcher, and is licensed under Apache License 2.0. DFUUtility does not claim ownership of this upstream code. Its unchanged source, README, full [license](Vendor/macvdmtool/LICENSE), and [pinned revision record](Vendor/macvdmtool/UPSTREAM_REVISION) are retained. Packaged apps include these materials under `Contents/Resources/ThirdPartyLicenses/`.
+DFUUtility bundles upstream [Asahi Linux macvdmtool](https://github.com/AsahiLinux/macvdmtool) at commit `b22ae51eb43a0e1daa21d41616ac899f28e7bf8a`. macvdmtool remains Copyright 2021 The Asahi Linux Contributors and Apache-2.0 licensed; DFUUtility does not claim ownership or relicense it. Its upstream source, attribution, [license](Vendor/macvdmtool/LICENSE), and [revision record](Vendor/macvdmtool/UPSTREAM_REVISION) are preserved and included in packaged apps.

@@ -1,0 +1,13 @@
+# Sanitized from the real GUI restore operation log on iPhone 6 / iPhone7,2.
+Target product: iPhone7,2
+message("cfgutil: restore: target OS is 12.5.8")
+waitingForDevice
+stageCompleted(name: "Waiting for the device")
+stageStarted(name: "Installing iOS", index: Optional(2), total: Optional(2))
+progress(stage: "Installing iOS", fraction: 0.01041666666666667)
+progress(stage: "Installing iOS", fraction: 0.2760416666666667)
+progress(stage: "Installing iOS", fraction: 0.495)
+progress(stage: "Installing iOS", fraction: 0.5)
+stageCompleted(name: "Installing iOS")
+message("Restored System on iPhone (ECID: 0x1234567890ABCDEF).")
+completed

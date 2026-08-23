@@ -1,0 +1,9 @@
+# Sanitized from the successful real guided-DFU operation log on iPhone 6 / iPhone7,2.
+# No unobserved cfgutil fields have been added.
+Target product: iPhone7,2
+Target ECID: 0x1234567890ABCDEF
+Timing: first disappearance at +7.587 s
+Timing: release cue at +8.664 s
+Timing: reappearance at +15.373 s
+Timing: DFU appearance at +15.374 s
+State: DFU detected

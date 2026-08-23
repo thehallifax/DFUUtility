@@ -1,8 +1,10 @@
 import DFUAppSupport
+import DFUCore
 import SwiftUI
 
 struct OperationProgressView: View {
     let presentation: OperationProgressPresentation
+    let target: DFUDevice?
 
     var body: some View {
         switch presentation.phase {
@@ -20,12 +22,12 @@ struct OperationProgressView: View {
                 } else {
                     ProgressView().controlSize(.small)
                 }
-                Text("Do not disconnect the target Mac.").font(.caption).foregroundStyle(.secondary)
+                Text(TargetPresentation.disconnectWarning(for: target)).font(.caption).foregroundStyle(.secondary)
             }
         case .reconnecting:
             VStack(alignment: .leading, spacing: 7) {
                 if let title = presentation.title { Text(title).font(.headline) }
-                ProgressView(presentation.stage ?? "Waiting for Mac to restart…")
+                ProgressView(presentation.stage ?? TargetPresentation.restartWaitingText(for: target))
             }
         case .completed:
             Label(presentation.message ?? "Operation completed successfully.", systemImage: "checkmark.circle.fill").foregroundStyle(.green)

@@ -12,7 +12,13 @@ public struct DoctorService: Sendable {
     private let statusService: StatusService; private let cache: IPSWCache; private let runner: any CommandRunning
     public init(statusService: StatusService = StatusService(), cache: IPSWCache = IPSWCache(), runner: any CommandRunning = ProcessRunner()) { self.statusService = statusService; self.cache = cache; self.runner = runner }
     public func report() throws -> DoctorReport {
-        let status = try statusService.status(); let app = FileManager.default.fileExists(atPath: "/Applications/Apple Configurator.app")
+        try report(status: statusService.status())
+    }
+    public func report(targets: [DFUDevice]) throws -> DoctorReport {
+        try report(status: statusService.status(targets: targets))
+    }
+    private func report(status: UtilityStatus) throws -> DoctorReport {
+        let app = FileManager.default.fileExists(atPath: "/Applications/Apple Configurator.app")
         var writable = false; do { try cache.prepare(); let probe = cache.directory.appendingPathComponent(".write-probe-\(UUID().uuidString)"); try Data().write(to: probe); try FileManager.default.removeItem(at: probe); writable = true } catch {}
         var restore = false
         if let cfgutil = status.host.cfgutilPath { let help = try? runner.run(cfgutil, arguments: ["help", "restore"]); restore = help?.status == 0 && help?.combinedOutput.contains("--ipsw") == true }

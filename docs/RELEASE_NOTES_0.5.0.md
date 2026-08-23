@@ -19,6 +19,10 @@ DFUUtility 0.5.0 is the first Community beta: a locally built, ad-hoc signed nat
 
 The complete Community GUI path passed on a **MacBook Air M2 (Mac14,2)**, including Normal detection, GUI Enter DFU, same-ECID verification, GUI Revive, GUI Restore, live progress, and target restart verification. The acceptance record is dated 2026-08-19 and stored in `Config/HardwareAcceptance.json`.
 
+The experimental mobile path subsequently passed end-to-end on **iPhone 6 (iPhone7,2)**: Normal/Recovery detection, guided same-ECID DFU, Apple image discovery/download, IPSW validation, GUI Restore, live progress, and restart verification.
+
+On **iPad (7th generation) Wi-Fi (iPad7,11)**, real Normal detection and packaged-GUI guided same-ECID DFU have passed. Recovery detection, IPSW download/validation, Restore, live progress, restart verification, and end-to-end acceptance remain pending. The successful guided-DFU run used the existing timing profile; no timing adjustment or universal cable requirement is claimed.
+
 This is one tested model, not a claim of general Apple Silicon or Intel T2 compatibility.
 
 ## Known limitations

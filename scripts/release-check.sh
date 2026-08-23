@@ -120,6 +120,12 @@ if [ "$packaged_version" = "$version" ] && [ "$packaged_build" = "$build" ] && [
 if [ -s LICENSE ] && grep -Fq "Apache License" LICENSE && [ -s "$app/Contents/Resources/DFUUtility-LICENSE.txt" ]; then pass "Project license" "Apache License 2.0"; else fail "Project license" "project Apache-2.0 license missing from source or app bundle"; fi
 if [ -s Vendor/macvdmtool/LICENSE ] && [ -s Vendor/macvdmtool/UPSTREAM_REVISION ] && [ -s Vendor/macvdmtool/README.upstream.md ] && grep -Fq "$vdm_revision" Vendor/macvdmtool/UPSTREAM_REVISION && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt" ] && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt" ]; then pass "Third-party licenses"; else fail "Third-party licenses" "macvdmtool attribution/license/revision incomplete"; fi
 
+screenshots_ok=true
+for screenshot in normal-mac mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
+  [ -s "$root/docs/images/$screenshot.png" ] || screenshots_ok=false
+done
+if [ "$screenshots_ok" = true ]; then pass "Release screenshots" "9 deterministic assets"; else fail "Release screenshots" "one or more 0.6.0 screenshots are missing"; fi
+
 artifact="$root/.build/distribution/$(distribution_artifact_name "$version")"
 if [ -f "$artifact" ] && unzip -Z1 "$artifact" >"$log_root/zip-contents.log" 2>&1 && grep -q '^DFUUtility.app/Contents/MacOS/DFUUtility$' "$log_root/zip-contents.log" && grep -q '^DFUUtility.app/Contents/Library/LaunchServices/DFUPrivilegedHelper$' "$log_root/zip-contents.log"; then
   pass "Distribution ZIP"
@@ -149,7 +155,36 @@ if [ "$acceptance_ok" = true ] && [ "$accepted_version" = "$version" ] && [ -n "
 else
   fail "Hardware acceptance" "missing, incomplete, or not recorded for version $version"
 fi
-warn "Hardware coverage" "broader Apple Silicon and Intel T2 coverage pending"
+mobile_ok=true
+mobile_name=$(plutil -extract mobileHardware.displayName raw "$acceptance" 2>/dev/null || true)
+mobile_product=$(plutil -extract mobileHardware.productType raw "$acceptance" 2>/dev/null || true)
+for key in normalDetection recoveryDetection guidedDFU sameECIDVerification imageDiscovery guiImageDownload ipswValidation guiRestore liveProgress targetRestartVerification; do
+  [ "$(plutil -extract "mobileHardware.results.$key" raw "$acceptance" 2>/dev/null || true)" = PASS ] || mobile_ok=false
+done
+if [ "$mobile_ok" = true ] && [ "$mobile_product" = iPhone7,2 ] && [ -n "$mobile_name" ]; then
+  pass "iPhone acceptance" "$mobile_name ($mobile_product) — end-to-end"
+else
+  fail "iPhone acceptance" "iPhone7,2 acceptance missing or incomplete"
+fi
+ipad_product=$(plutil -extract iPadHardware.productType raw "$acceptance" 2>/dev/null || true)
+ipad_normal=$(plutil -extract iPadHardware.results.normalDetection raw "$acceptance" 2>/dev/null || true)
+ipad_recovery=$(plutil -extract iPadHardware.results.recoveryDetection raw "$acceptance" 2>/dev/null || true)
+ipad_dfu=$(plutil -extract iPadHardware.results.guidedDFU raw "$acceptance" 2>/dev/null || true)
+ipad_same_ecid=$(plutil -extract iPadHardware.results.sameECIDVerification raw "$acceptance" 2>/dev/null || true)
+ipad_pending=true
+for key in recoveryDetection guiRestore liveProgress targetRestartVerification; do
+  [ "$(plutil -extract "iPadHardware.results.$key" raw "$acceptance" 2>/dev/null || true)" = PENDING ] || ipad_pending=false
+done
+ipad_firmware=true
+for key in imageDiscovery guiImageDownload ipswValidation; do
+  [ "$(plutil -extract "iPadHardware.results.$key" raw "$acceptance" 2>/dev/null || true)" = PASS ] || ipad_firmware=false
+done
+if [ "$ipad_product" = iPad7,11 ] && [ "$ipad_normal" = PASS ] && [ "$ipad_dfu" = PASS ] && [ "$ipad_same_ecid" = PASS ] && [ "$ipad_firmware" = true ] && [ "$ipad_pending" = true ]; then
+  pass "iPad acceptance" "iPad7,11 — DFU and firmware validated; Recovery/Restore pending"
+else
+  fail "iPad acceptance" "iPad7,11 status is missing or overclaims untested milestones"
+fi
+warn "Hardware coverage" "Mac14,2 and iPhone7,2 accepted end-to-end; iPad7,11 DFU/firmware only; broader coverage pending"
 
 result=$(release_result "$failures" "$warnings" "$mode")
 echo

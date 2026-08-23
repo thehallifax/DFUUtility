@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var showDiagnostics = false
     @State private var showAbout = false
     @State private var confirmRestore = false
+    @State private var showMobileDFU = false
+    @State private var showCacheManager = false
     @State private var demoTarget = "None"
 
     init(model: AppModel) {
@@ -37,14 +39,18 @@ struct ContentView: View {
         .sheet(isPresented: $showVersions) { VersionPicker(model: model, isPresented: $showVersions) }
         .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails).frame(minWidth: 480, minHeight: 430).padding() }
         .sheet(isPresented: $showAbout) { AboutView().frame(minWidth: 520, minHeight: 420).padding() }
+        .sheet(isPresented: $showCacheManager) { CacheManagerView(model: model, isPresented: $showCacheManager) }
+        .sheet(isPresented: $showMobileDFU, onDismiss: { model.dismissMobileDFUAssistant() }) {
+            if let assistant = model.mobileDFUAssistant { MobileDFUAssistantView(model: assistant, isPresented: $showMobileDFU) }
+        }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [UTType(filenameExtension: "ipsw") ?? .data], allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first { Task { let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; await model.validateManualIPSW(url) } }
         }
-        .alert("Restore this Mac?", isPresented: $confirmRestore) {
+        .alert("Restore this \(model.target?.family.displayName ?? "device")?", isPresented: $confirmRestore) {
             Button("Cancel", role: .cancel) {}
             Button("Restore", role: .destructive) { model.restoreConfirmed() }
         } message: {
-            Text("\(model.target?.friendlyName ?? "Target Mac")\n\(model.target?.model ?? "Unknown model")\nECID: \(model.target?.ecid ?? "Unknown")\nmacOS \(model.selectedRelease?.version ?? "selected image") (\(model.selectedRelease?.build ?? "unknown build"))\n\nThis will erase the target Mac and reinstall macOS.")
+            Text("\(model.target?.friendlyName ?? "Target device")\nProduct: \(model.target?.restoreProductType ?? "Unknown")\nECID: \(model.target?.ecid ?? "Unknown")\n\(model.selectedRelease?.platform.displayName ?? "OS") \(model.selectedRelease?.version ?? "selected image") (\(model.selectedRelease?.build ?? "unknown build"))\n\nThis will erase the target device and reinstall its operating system.")
         }
         .alert("DFUUtility", isPresented: Binding(get: { model.presentedError != nil }, set: { if !$0 { model.presentedError = nil } })) { Button("OK") { model.presentedError = nil } } message: { Text(model.presentedError ?? "") }
     }
@@ -53,30 +59,58 @@ struct ContentView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 if model.targetDevices.isEmpty {
-                    Text("No target Mac connected").font(.headline)
-                    Text("Connect an Apple Silicon Mac using a USB-C data cable.").foregroundStyle(.secondary)
+                    Text("No target device connected").font(.headline)
+                    Text("Connect a supported Apple device using a data-capable cable.").foregroundStyle(.secondary)
                 }
-                else if model.targetDevices.count > 1 { Text("Multiple targets detected — disconnect all but one.").foregroundStyle(.orange) }
+                else if model.targetDevices.count > 1 {
+                    Text("Multiple targets detected").font(.headline)
+                    Picker("Selected target", selection: Binding(get: { model.selectedTargetECID ?? "" }, set: { model.selectTarget(ecid: $0) })) {
+                        Text("Choose a target…").tag("")
+                        ForEach(model.targetDevices.filter { $0.ecid != nil }, id: \.ecid) { device in
+                            Text("\(device.friendlyName ?? device.family.displayName) — \(device.state.rawValue) — \(device.restoreProductType ?? "Unknown product")").tag(device.ecid!)
+                        }
+                    }
+                    Text("A destructive action remains disabled until one ECID-addressable target is explicitly selected.").font(.caption).foregroundStyle(.secondary)
+                }
                 else if let target = model.target {
                     if let name = target.friendlyName { Text(name).font(.title2.bold()) }
                     LabeledContent("State", value: model.targetWorkflowState.rawValue)
-                    if let modelName = target.model { LabeledContent("Identifier", value: modelName) }
+                    LabeledContent("Family", value: target.family.displayName)
+                    if let product = target.restoreProductType { LabeledContent("Product", value: product) }
+                    if let serial = target.serialNumber { LabeledContent("Serial number", value: serial) }
                     if let ecid = target.ecid { LabeledContent("ECID", value: ecid) }
                 }
-                if model.isDemoMode {
-                    Picker("Demo target", selection: $demoTarget) { ForEach(["None", "Normal", "Recovery", "DFU"], id: \.self) { Text($0) } }
-                        .onChange(of: demoTarget) { _, value in model.setDemoTarget(value == "None" ? nil : DeviceState(rawValue: value)) }
+                if model.isDemoMode && !model.isScreenshotPresentation {
+                    Picker("Demo target", selection: $demoTarget) { ForEach(["None", "Mac Normal", "Mac Recovery", "Mac DFU", "iPhone 6 Normal", "iPhone 6 Recovery"], id: \.self) { Text($0) } }
+                        .onChange(of: demoTarget) { _, value in
+                            if value.hasPrefix("iPhone 6 ") { model.setDemoMobileTarget(DeviceState(rawValue: String(value.dropFirst("iPhone 6 ".count)))) }
+                            else if value.hasPrefix("Mac ") { model.setDemoTarget(DeviceState(rawValue: String(value.dropFirst("Mac ".count)))) }
+                            else { model.setDemoTarget(nil) }
+                        }
                 }
                 HStack {
-                    Button("Enter DFU") { Task { await model.enterDFU() } }.disabled(!model.canEnterDFU)
-                    Button("Revive Mac") { model.revive() }.disabled(!model.canRevive)
+                    if model.target?.family == .mac {
+                        Button("Enter DFU") { Task { await model.enterDFU() } }.disabled(!model.canEnterDFU)
+                    } else if let target = model.target, target.state == .normal || target.state == .recovery {
+                        Button("Enter DFU…") { if model.prepareMobileDFUAssistant() { showMobileDFU = true } }.disabled(!model.canUseMobileDFUAssistant)
+                    }
+                    Button("Revive \(model.target?.family == .mac ? "Mac" : "Device")") { model.revive() }.disabled(!model.canRevive)
                     Button("Refresh") { Task { await model.refreshDiagnosticsAndTarget() } }
                 }
                 if !model.isDemoMode && model.privilegeMode == .signedHelper && !model.privilegedHelperState.isReady { helperSetup }
-                if !model.isDemoMode && model.privilegeMode == .community, model.target?.state == .normal { Text("Administrator authorization appears only when you click Enter DFU.").font(.caption).foregroundStyle(.secondary) }
+                switch model.targetDFUGuidance {
+                case .macAdministratorAuthorization:
+                    Text("Administrator authorization appears only when you click Enter DFU.").font(.caption).foregroundStyle(.secondary)
+                case .guidedPhysicalButtons:
+                    Text("DFU entry requires physical button input. DFUUtility will guide the sequence and detect the result.").font(.caption).foregroundStyle(.secondary)
+                case .unsupportedMobileProduct:
+                    Text("Guided DFU instructions are not yet available for this product type.").font(.caption).foregroundStyle(.secondary)
+                case nil:
+                    EmptyView()
+                }
                 if model.doctorReport?.status.host.macVDMToolPath == nil { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
-        } label: { Label("Target Mac", systemImage: "desktopcomputer") }
+        } label: { Label("Target Device", systemImage: model.target?.family == .mac ? "desktopcomputer" : "iphone") }
     }
 
     @ViewBuilder private var helperSetup: some View {
@@ -105,31 +139,34 @@ struct ContentView: View {
                 HStack {
                     Button("Change Version…") { model.beginChoosingVersion(); showVersions = true }
                     Button("Choose Local IPSW…") { showImporter = true }
+                    Button("Manage Downloads…") { showCacheManager = true }
                 }
-                OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.selectedRelease?.version))
-                Button("Restore Mac", role: .destructive) { confirmRestore = true }.disabled(!model.canRestore)
-                Text("Restore erases the target Mac. Revive is intended to repair firmware and recoveryOS without erasing user data.").font(.caption).foregroundStyle(.secondary)
+                OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.selectedRelease?.version, platform: model.targetRestorePlatform), target: model.target)
+                Button("Restore \(model.target?.family.displayName ?? "Device")", role: .destructive) { confirmRestore = true }.disabled(!model.canRestore)
+                Text("Restore erases the target device.").font(.caption.bold()).foregroundStyle(.secondary)
+                if model.canRevive { Text("Revive attempts repair without erasing recoverable user data, but is not a backup or guarantee.").font(.caption).foregroundStyle(.secondary) }
                 HStack {
                     if let log = model.lastLogURL { Button("View Log") { NSWorkspace.shared.open(log) } }
                     Button("Reveal Logs in Finder") { NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DFUUtility")]) }
                 }
                 if !model.canRestore { Text("Restore requires a validated image and a positively detected real DFU target.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
-        } label: { Label("macOS Restore", systemImage: "arrow.down.circle") }
+        } label: { Label(model.restoreSectionTitle, systemImage: "arrow.down.circle") }
     }
 
     @ViewBuilder private var selectedImageSummary: some View {
         switch model.selectedImagePresentation {
         case .unavailable:
-            Text("No macOS image selected").font(.title3.bold())
+            Text("No restore image selected").font(.title3.bold())
         case .managed(let release, _):
-            Text("macOS \(release.version)").font(.title2.bold())
+            Text("\(release.platform.displayName) \(release.version)").font(.title2.bold())
             LabeledContent("Build", value: release.build)
-            LabeledContent("Size", value: formatBytes(release.fileSize))
+            LabeledContent("Size", value: formatBytes(model.selectedImageDisplaySize))
         case .local(let url, _, _):
             Text("Local IPSW").font(.title2.bold())
             Text(url.lastPathComponent).font(.headline)
             Text(url.deletingLastPathComponent().path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
     }
 
@@ -144,12 +181,11 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var downloadControl: some View {
-        switch model.downloadState {
-        case .downloading:
-            if let value = model.downloadPresentation {
+        switch model.downloadPresentationState {
+        case .preparing(let value), .downloading(let value):
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Downloading macOS \(value.release.version)").font(.headline)
-                    ProgressView(value: value.fraction)
+                    Text("Downloading \(value.release.platform.displayName) \(value.release.version)").font(.headline)
+                    if let fraction = value.fraction { ProgressView(value: fraction) } else { ProgressView() }
                     HStack {
                         Text("\(formatBytes(value.completed)) / \(formatBytes(value.total))").font(.caption.monospacedDigit())
                         Spacer()
@@ -158,8 +194,8 @@ struct ContentView: View {
                     }
                     Button("Cancel", role: .cancel) { model.cancelDownload() }
                 }
-            }
         case .validating: ProgressView("Validating image…")
+        case .failed(let message): Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
         default:
             if model.selectedRelease != nil, model.imageURL == nil { Button(model.imageState.isPartial ? "Resume Download" : "Download Image") { model.beginDownload() } }
         }
@@ -176,7 +212,7 @@ struct VersionPicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Choose macOS Version").font(.title2.bold())
+                Text("Choose \(model.selectedRelease?.platform.displayName ?? model.imageChoices.first?.release.platform.displayName ?? "OS") Version").font(.title2.bold())
                 Spacer()
                 Button { Task { await model.refreshCatalogue(); model.beginChoosingVersion() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(model.catalogueState == .loading)
             }
@@ -190,8 +226,8 @@ struct VersionPicker: View {
                                 Image(systemName: model.pendingRelease?.build == choice.release.build ? "largecircle.fill.circle" : "circle")
                                     .foregroundStyle(.blue)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    HStack { Text("macOS \(choice.release.version)").font(.headline); if choice.isRecommended { Text("Latest available").font(.caption).padding(.horizontal, 6).padding(.vertical, 2).background(.blue.opacity(0.12), in: Capsule()) } }
-                                    Text("Build \(choice.release.build) · \(choice.release.fileSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unknown size")").foregroundStyle(.secondary)
+                                    HStack { Text("\(choice.release.platform.displayName) \(choice.release.version)").font(.headline); if choice.isRecommended { Text("Latest available").font(.caption).padding(.horizontal, 6).padding(.vertical, 2).background(.blue.opacity(0.12), in: Capsule()) } }
+                                    Text("Build \(choice.release.build) · \(model.displaySize(for: choice.release).map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unknown size")").foregroundStyle(.secondary)
                                     HStack { cacheLabel(choice.cacheState); Text("· \(choice.compatibility.label)").foregroundStyle(.secondary) }.font(.caption)
                                 }
                                 Spacer()

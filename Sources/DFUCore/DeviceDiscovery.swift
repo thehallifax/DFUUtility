@@ -36,15 +36,21 @@ public struct ConfiguratorDeviceDiscovery: DeviceDiscovering {
             }
             var args = ["--format", "JSON", "--timeout", "1"]
             if !selector.isEmpty { args += ["--ecid", selector] }
-            args += ["get", "ECID", "deviceType", "deviceClass", "bootedState", "isRestorable", "UDID", "serialNumber"]
+            args += ["get", "ECID", "deviceType", "deviceClass", "bootedState", "isRestorable", "UDID", "serialNumber", "name"]
             let details = try runner.run(cfgutil, arguments: args)
             let values = Self.flattenJSON(details.stdout)
             let state = Self.state(from: values)
+            let productType = Self.first(values, keys: ["deviceType", "DeviceType"])
+            let deviceClass = Self.first(values, keys: ["deviceClass", "DeviceClass"])
             result.append(DFUDevice(
+                family: Self.family(deviceClass: deviceClass, productType: productType),
                 state: state,
-                model: Self.first(values, keys: ["deviceType", "DeviceType"]),
-                identifier: Self.first(values, keys: ["UDID", "serialNumber"]),
-                ecid: Self.first(values, keys: ["ECID"]) ?? selector
+                model: productType,
+                identifier: Self.first(values, keys: ["UDID"]),
+                ecid: Self.first(values, keys: ["ECID"]) ?? selector,
+                productType: productType,
+                modelIdentifier: productType,
+                serialNumber: Self.first(values, keys: ["serialNumber", "SerialNumber"])
             ))
         }
         return result
@@ -61,7 +67,8 @@ public struct ConfiguratorDeviceDiscovery: DeviceDiscovering {
             let isRecovery = block.localizedCaseInsensitiveContains("Recovery Mode") || block.contains("0x1281")
             guard isDFU || isRecovery else { return nil }
             let name = block.split(separator: " ", maxSplits: 1).first.map(String.init)
-            return DFUDevice(state: isDFU ? .dfu : .recovery, model: name)
+            let family: AppleDeviceFamily = block.localizedCaseInsensitiveContains("iPhone") ? .iPhone : block.localizedCaseInsensitiveContains("iPad") ? .iPad : block.localizedCaseInsensitiveContains("Mac") ? .mac : .unknown
+            return DFUDevice(family: family, state: isDFU ? .dfu : .recovery, model: name)
         }
     }
 
@@ -92,6 +99,14 @@ public struct ConfiguratorDeviceDiscovery: DeviceDiscovering {
         if joined.contains("booted") || joined.contains("normal") { return .normal }
         return .unknown
     }
+
+    private static func family(deviceClass: String?, productType: String?) -> AppleDeviceFamily {
+        let value = "\(deviceClass ?? "") \(productType ?? "")".lowercased()
+        if value.contains("iphone") { return .iPhone }
+        if value.contains("ipad") { return .iPad }
+        if value.contains("mac") { return .mac }
+        return .unknown
+    }
 }
 
 public struct StatusService: Sendable {
@@ -99,6 +114,10 @@ public struct StatusService: Sendable {
     public init(discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery()) { self.discovery = discovery }
 
     public func status() throws -> UtilityStatus {
+        try status(targets: discovery.devices())
+    }
+
+    public func status(targets: [DFUDevice]) throws -> UtilityStatus {
         var size = 0
         sysctlbyname("hw.optional.arm64", nil, &size, nil, 0)
         var arm64 = Int32(0)
@@ -111,6 +130,6 @@ public struct StatusService: Sendable {
             macVDMToolPath: macVDMTool?.url,
             cfgutilPath: ToolLocator.executable(named: "cfgutil"),
             macVDMToolSource: macVDMTool?.source
-        ), targets: try discovery.devices())
+        ), targets: targets)
     }
 }

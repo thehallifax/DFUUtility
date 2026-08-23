@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let destination = CommandLine.arguments[index + 1]
             let scenario = CommandLine.arguments.firstIndex(of: "--screenshot").flatMap {
                 CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil
-            } ?? "normal"
+            } ?? "normal-mac"
             Task { @MainActor in
                 await self.captureDemoScreenshot(scenario: scenario, at: destination)
             }
@@ -26,13 +26,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         await model.load()
         let root: AnyView
         let size: NSSize
-        if scenario == "chooser" {
+        if scenario == "firmware-chooser" {
             model.beginChoosingVersion()
             root = AnyView(VersionPicker(model: model, isPresented: .constant(true)))
             size = NSSize(width: 620, height: 450)
+        } else if scenario == "manage-downloads" {
+            root = AnyView(CacheManagerView(model: model, isPresented: .constant(true)))
+            size = NSSize(width: 800, height: 600)
+        } else if scenario == "iphone-guided-dfu" || scenario == "ipad-guided-dfu" {
+            guard model.prepareMobileDFUAssistant(), let assistant = model.mobileDFUAssistant else { NSApp.terminate(nil); return }
+            assistant.setDemoState(.detectedDFU)
+            root = AnyView(MobileDFUAssistantView(model: assistant, isPresented: .constant(true)))
+            size = NSSize(width: 700, height: 600)
         } else {
             root = AnyView(ContentView(model: model))
-            size = NSSize(width: 700, height: 700)
+            size = NSSize(width: 900, height: 760)
         }
         let rendered = root
             .frame(width: size.width, height: size.height)
@@ -79,11 +87,13 @@ struct DFUUtilityApplication: App {
             let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Demo-Cache"))
             let scenario = CommandLine.arguments.firstIndex(of: "--screenshot").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil }
             _model = StateObject(wrappedValue: AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: cache, diagnostics: DemoDiagnostics(), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), isDemoMode: true, screenshotScenario: scenario))
-        } else { _model = StateObject(wrappedValue: AppModel()) }
+        } else { _model = StateObject(wrappedValue: AppModel(targetDiscoveryAttempts: 3)) }
     }
 
     var body: some Scene {
-        WindowGroup("DFUUtility") { ContentView(model: model).frame(minWidth: 590, minHeight: 620) }
+        let window = MainWindowConfiguration.standard
+        WindowGroup("DFUUtility") { ContentView(model: model).frame(minWidth: window.minimumWidth, minHeight: window.minimumHeight) }
+            .defaultSize(width: window.defaultWidth, height: window.defaultHeight)
             .windowResizability(.contentMinSize)
         Settings { DiagnosticsView(report: model.doctorReport, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails) }
     }

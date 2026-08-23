@@ -1,0 +1,13 @@
+# Sanitized from the successful real guided-DFU operation log on iPad (7th generation) / iPad7,11.
+# All identifiers below are synthetic; no real ECID, serial number, or UDID is retained.
+Target product: iPad7,11
+Target ECID: 0x1A2B3C4D5E6F7890
+Target serial: SYNTHETIC-IPAD-SERIAL
+Target identifier: SYNTHETIC-IPAD-UDID
+Timing clock: monotonic
+Timing: first disappearance at +5.370 s
+Timing: release cue at +6.438 s
+Timing: DFU enumeration at +17.170 s
+State: DFU detected
+Same-ECID verification: PASS
+Restore initiated: No

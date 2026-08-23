@@ -18,6 +18,7 @@ public struct DFUController: Sendable {
         let existing = try discovery.devices()
         guard !existing.isEmpty else { throw DFUError.noTarget }
         if existing.count > 1 { throw DFUError.multipleTargets(existing.count) }
+        guard existing[0].family == .mac else { throw DFUError.toolUnavailable("automatic DFU entry is available only for Mac targets; place iPhone or iPad into DFU manually") }
         let expectedECID = existing[0].ecid
         let invocation = Self.command(tool: tool, isRoot: geteuid() == 0)
         let result = try runner.runInteractive(invocation.executable, arguments: invocation.arguments)

@@ -54,3 +54,23 @@ public struct ImageDownloadPresentation: Equatable, Sendable {
     public let bytesPerSecond: Double?
     public var fraction: Double? { total.flatMap { $0 > 0 ? min(max(Double(completed) / Double($0), 0), 1) : nil } }
 }
+
+public enum ImageDownloadPresentationState: Equatable, Sendable {
+    case idle
+    case preparing(ImageDownloadPresentation)
+    case downloading(ImageDownloadPresentation)
+    case validating
+    case completed
+    case cancelled
+    case failed(String)
+
+    public var progress: ImageDownloadPresentation? {
+        switch self { case .preparing(let value), .downloading(let value): value; default: nil }
+    }
+    public var isDeterminate: Bool { progress?.fraction != nil }
+}
+
+public struct MainWindowConfiguration: Equatable, Sendable {
+    public let defaultWidth: Double, defaultHeight: Double, minimumWidth: Double, minimumHeight: Double
+    public static let standard = Self(defaultWidth: 1040, defaultHeight: 800, minimumWidth: 820, minimumHeight: 680)
+}

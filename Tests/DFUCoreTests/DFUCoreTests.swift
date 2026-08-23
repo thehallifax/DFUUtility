@@ -10,6 +10,25 @@ private func fixture(_ name: String) throws -> Data { try Data(contentsOf: URL(f
 private struct AcceptValidator: IPSWValidating { func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { guard FileManager.default.fileExists(atPath: url.path) else { throw DFUError.invalidIPSW("missing") } } }
 private struct RejectValidator: IPSWValidating { func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { throw DFUError.invalidIPSW("test rejection") } }
 private struct MockCatalogue: IPSWCatalogueFetching { let values: [IPSWRelease]; let error: Error?; init(_ values: [IPSWRelease] = [], error: Error? = nil) { self.values = values; self.error = error }; func releases() async throws -> [IPSWRelease] { if let error { throw error }; return values } }
+private final class SequenceCommandRunner: @unchecked Sendable, CommandRunning {
+    private let lock = NSLock(); private var results: [CommandResult]
+    init(_ results: [CommandResult]) { self.results = results }
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult { lock.withLock { results.isEmpty ? CommandResult(status: 1, stdout: Data(), stderr: Data()) : results.removeFirst() } }
+}
+private final class MacManifestRunner: @unchecked Sendable, CommandRunning {
+    private let lock = NSLock(); private(set) var extractedPaths: [String] = []
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult {
+        if arguments.first == "-Z1" { return result("BootabilityBundle/Restore/BuildManifest.plist\nBootabilityBundle/Restore/Restore.plist\nBuildManifest.plist\nRestore.plist\n") }
+        if arguments.first == "-p" {
+            let path = arguments.last ?? ""; lock.withLock { extractedPaths.append(path) }
+            let products = path == "BuildManifest.plist" ? ["Mac14,2", "Mac15,3"] : ["iSim1,1"]
+            return CommandResult(status: 0, stdout: try PropertyListSerialization.data(fromPropertyList: ["SupportedProductTypes": products], format: .xml, options: 0), stderr: Data())
+        }
+        return result("4833c12d9d8d330d47216edbcaaf8cb4b926c99a  image.ipsw\n")
+    }
+    var manifests: [String] { lock.withLock { extractedPaths } }
+}
+private func result(_ string: String, status: Int32 = 0) -> CommandResult { CommandResult(status: status, stdout: Data(string.utf8), stderr: Data()) }
 private actor MockDownloader: IPSWDownloading {
     enum Behavior: Sendable { case success, interrupted, failure }
     let behavior: Behavior; private(set) var calls = 0
@@ -27,6 +46,135 @@ private actor MockDownloader: IPSWDownloading {
     ]]]]
     let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0), parsed = try AppleIPSWCatalogue.parse(data)
     #expect(parsed.count == 1); #expect(parsed[0].version == "26.6.2"); #expect(parsed[0].checksum == "abc"); #expect(parsed[0].supportedDevices == ["Mac14,2", "Mac15,3"])
+}
+
+@Test func parsesAppleMobileCatalogueByFamilyAndProductType() async throws {
+    let phoneURL = URL(string: "https://updates.cdn-apple.com/iPhone.ipsw")!, tabletURL = URL(string: "https://updates.cdn-apple.com/iPad.ipsw")!
+    let plist: [String: Any] = ["MobileDeviceSoftwareVersionsByVersion": ["1": ["MobileDeviceSoftwareVersions": [
+        "iPhone15,2": ["23G83": ["Restore": ["FirmwareURL": phoneURL.absoluteString, "FirmwareSHA1": "phone", "ProductVersion": "26.6.1", "BuildVersion": "23G83"]]],
+        "iPad13,18": ["23G83": ["Restore": ["FirmwareURL": tabletURL.absoluteString, "FirmwareSHA1": "tablet", "ProductVersion": "26.6.1", "BuildVersion": "23G83"]]]
+    ]]]]
+    let parsed = try AppleMobileIPSWCatalogue.parse(PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0))
+    #expect(parsed.count == 2); #expect(parsed.contains { $0.platform == .iOS && $0.supportedDevices == ["iPhone15,2"] })
+    #expect(parsed.contains { $0.platform == .iPadOS && $0.supportedDevices == ["iPad13,18"] }); #expect(parsed.allSatisfy { $0.signingStatus == .appleCatalogue && $0.isSigned == nil })
+    let service = AppleIPSWService(catalogue: MockCatalogue(), mobileCatalogue: MockCatalogue(parsed), downloader: MockDownloader(), cache: IPSWCache(directory: try temporaryDirectory()), validator: AcceptValidator())
+    #expect(try await service.availableImages(for: DFUDevice(family: .iPhone, state: .normal, productType: "iPhone15,2")).map(\.platform) == [.iOS])
+    #expect(try await service.availableImages(for: DFUDevice(family: .iPad, state: .normal, productType: "iPad13,18")).map(\.platform) == [.iPadOS])
+    #expect(try await service.availableImages(for: DFUDevice(family: .iPhone, state: .normal, productType: "iPhone99,9")).isEmpty)
+}
+
+@Test func iPad711CatalogueUsesIPadOSProductFilteringAndNamespace() async throws {
+    let padURL = URL(string: "https://updates.cdn-apple.com/iPad7-11.ipsw")!
+    let plist: [String: Any] = ["MobileDeviceSoftwareVersionsByVersion": ["1": ["MobileDeviceSoftwareVersions": [
+        "iPhone7,2": ["16H81": ["Restore": ["FirmwareURL": "https://updates.cdn-apple.com/phone.ipsw", "FirmwareSHA1": "phone", "ProductVersion": "12.5.8", "BuildVersion": "16H81"]]],
+        "iPad7,11": ["22H374": ["Restore": ["FirmwareURL": padURL.absoluteString, "FirmwareSHA1": "tablet", "ProductVersion": "18.7.10", "BuildVersion": "22H374"]]],
+        "iPad7,12": ["22H374": ["Restore": ["FirmwareURL": "https://updates.cdn-apple.com/other.ipsw", "FirmwareSHA1": "other", "ProductVersion": "18.7.10", "BuildVersion": "22H374"]]]
+    ]]]]
+    let releases = try AppleMobileIPSWCatalogue.parse(PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0))
+    let service = AppleIPSWService(catalogue: MockCatalogue(), mobileCatalogue: MockCatalogue(releases), downloader: MockDownloader(), cache: IPSWCache(directory: try temporaryDirectory()), validator: AcceptValidator())
+    let compatible = try await service.availableImages(for: DFUDevice(family: .iPad, state: .normal, productType: "iPad7,11"))
+    #expect(compatible.count == 1); #expect(compatible[0].platform == .iPadOS); #expect(compatible[0].version == "18.7.10"); #expect(compatible[0].build == "22H374"); #expect(compatible[0].supportedDevices == ["iPad7,11"])
+    #expect(IPSWCache(directory: URL(fileURLWithPath: "/tmp/cache")).destination(for: compatible[0]).path.contains("/iPadOS/22H374/"))
+}
+
+@Test func cfgutilDiscoveryClassifiesMacIPhoneAndIPad() throws {
+    func details(_ deviceClass: String, _ product: String, _ state: String, _ ecid: String) -> CommandResult {
+        result("{\"ECID\":\"\(ecid)\",\"deviceClass\":\"\(deviceClass)\",\"deviceType\":\"\(product)\",\"bootedState\":\"\(state)\",\"UDID\":\"SYNTHETIC-\(ecid)\",\"serialNumber\":\"SERIAL-REDACTED\"}")
+    }
+    let runner = SequenceCommandRunner([result("{\"Devices\":[\"1\",\"2\",\"3\"]}"), details("Mac", "Mac14,2", "Booted", "1"), details("iPhone", "iPhone15,2", "Recovery", "2"), details("iPad", "iPad13,18", "DFU", "3")])
+    let devices = try ConfiguratorDeviceDiscovery(runner: runner, cfgutil: URL(fileURLWithPath: "/cfgutil")).devices()
+    #expect(devices.map(\.family) == [.mac, .iPhone, .iPad]); #expect(devices.map(\.state) == [.normal, .recovery, .dfu])
+    #expect(devices[1].restoreProductType == "iPhone15,2"); #expect(devices[1].serialNumber == "SERIAL-REDACTED")
+}
+
+@Test func mobileCacheIsPlatformSeparatedWithoutMovingMacCache() throws {
+    let cache = IPSWCache(directory: URL(fileURLWithPath: "/tmp/cache"))
+    let mac = release(), phone = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G83", downloadURL: sampleURL, supportedDevices: ["iPhone15,2"])
+    let tablet = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: sampleURL, supportedDevices: ["iPad13,18"])
+    #expect(cache.destination(for: mac).path == "/tmp/cache/25G83/UniversalMac_26.6.2_25G83_Restore.ipsw")
+    #expect(cache.destination(for: phone).path.contains("/iOS/23G83/")); #expect(cache.destination(for: tablet).path.contains("/iPadOS/23G83/"))
+}
+
+@Test func managedCacheEnumeratesPlatformsPartialsValidationAndTotalSize() throws {
+    let cache = IPSWCache(directory: try temporaryDirectory())
+    let mac = release(), phone = IPSWRelease(platform: .iOS, version: "12.5.8", build: "16H81", downloadURL: sampleURL, supportedDevices: ["iPhone7,2"])
+    let pad = IPSWRelease(platform: .iPadOS, version: "18.7.10", build: "22H374", downloadURL: sampleURL, supportedDevices: ["iPad7,11"])
+    for value in [mac, phone] { try cache.prepare(for: value); try Data(repeating: 1, count: value == mac ? 11 : 13).write(to: cache.partialURL(for: value)); _ = try cache.commit(partial: cache.partialURL(for: value), release: value) }
+    try cache.prepare(for: pad); try Data(repeating: 1, count: 17).write(to: cache.partialURL(for: pad))
+    let entries = try cache.managedEntries(validator: AcceptValidator())
+    #expect(entries.map(\.release.platform).contains(.macOS)); #expect(entries.map(\.release.platform).contains(.iOS)); #expect(entries.map(\.release.platform).contains(.iPadOS))
+    #expect(entries.first { $0.release.build == "22H374" }?.state == .partial)
+    #expect(entries.filter { $0.state == .completeValidated }.count == 2)
+    #expect(entries.reduce(0) { $0 + $1.sizeBytes } == 41)
+}
+
+@Test func managedCacheRemovesOnlyRequestedManagedEntryAndRejectsExternalFiles() throws {
+    let root = try temporaryDirectory(), cache = IPSWCache(directory: root.appendingPathComponent("cache")), value = release()
+    try cache.prepare(for: value); try Data(repeating: 1, count: 9).write(to: cache.partialURL(for: value))
+    let partial = try #require(cache.managedEntries(validator: AcceptValidator()).first)
+    try cache.remove(partial)
+    #expect(!FileManager.default.fileExists(atPath: partial.url.path)); #expect(try cache.managedEntries(validator: AcceptValidator()).isEmpty)
+    let external = root.appendingPathComponent("manual.ipsw"); try Data("manual".utf8).write(to: external)
+    let unsafe = ManagedIPSWEntry(release: value, state: .completeValidated, sizeBytes: 6, url: external)
+    #expect(throws: (any Error).self) { try cache.remove(unsafe) }
+    #expect(FileManager.default.fileExists(atPath: external.path))
+}
+
+@Test func realMacCacheLayoutPrefersRootManifestAndIsSharedAsValidated() throws {
+    let cacheRoot = try temporaryDirectory().appendingPathComponent("IPSW"), release = IPSWRelease(
+        version: "26.6.2", build: "25G83", downloadURL: URL(string: "https://updates.cdn-apple.com/UniversalMac.ipsw")!,
+        fileSize: 1_100_001, checksum: "4833c12d9d8d330d47216edbcaaf8cb4b926c99a", supportedDevices: ["Mac14,2", "Mac15,3"]
+    )
+    let cache = IPSWCache(directory: cacheRoot), folder = cacheRoot.appendingPathComponent("25G83")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let image = folder.appendingPathComponent("UniversalMac_26.6.2_25G83_Restore.ipsw")
+    try Data(repeating: 0, count: 1_100_001).write(to: image)
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; try encoder.encode(release).write(to: folder.appendingPathComponent("metadata.json"))
+    let runner = MacManifestRunner(), validator = IPSWValidator(runner: runner)
+
+    let managed = try cache.managedEntries(validator: validator)
+    #expect(managed.count == 1); #expect(managed[0].state == .completeValidated); #expect(managed[0].validationFailure == nil)
+    #expect(try cache.validCachedURL(for: release, validator: validator) == image)
+    #expect(runner.manifests == ["BuildManifest.plist", "BuildManifest.plist"])
+}
+
+@Test func validationDiagnosticsIdentifySupportedDevicePredicate() throws {
+    let root = try temporaryDirectory(), image = root.appendingPathComponent("image.ipsw"); try Data(repeating: 0, count: 1_100_001).write(to: image)
+    let release = IPSWRelease(version: "1", build: "A", downloadURL: sampleURL, fileSize: 1_100_001, supportedDevices: ["Mac14,2"])
+    let runner = SequenceCommandRunner([result("Nested/BuildManifest.plist\nRestore.plist\n"), CommandResult(status: 0, stdout: try PropertyListSerialization.data(fromPropertyList: ["SupportedProductTypes": ["iSim1,1"]], format: .xml, options: 0), stderr: Data())])
+    let result = IPSWValidator(runner: runner).validationResult(image, release: release, verifyChecksum: false)
+    guard case .invalid(let failure) = result else { Issue.record("Expected a diagnostic validation failure"); return }
+    #expect(failure.predicate == .supportedDevices); #expect(failure.reason.contains("compatible"))
+}
+
+@Test func validatorRejectsWrongProductMobileIPSW() throws {
+    let root = try temporaryDirectory(), file = root.appendingPathComponent("wrong.ipsw"); try Data(repeating: 0, count: 1_100_001).write(to: file)
+    let manifest = try PropertyListSerialization.data(fromPropertyList: ["SupportedProductTypes": ["iPad13,18"]], format: .xml, options: 0)
+    let runner = SequenceCommandRunner([result("BuildManifest.plist\nRestore.plist\n"), CommandResult(status: 0, stdout: manifest, stderr: Data())])
+    let phone = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G83", downloadURL: sampleURL, supportedDevices: ["iPhone15,2"])
+    #expect(throws: DFUError.self) { try IPSWValidator(runner: runner).validate(file, release: phone, verifyChecksum: false) }
+}
+
+@Test func validatorRejectsWrongIPadProductIPSW() throws {
+    let root = try temporaryDirectory(), file = root.appendingPathComponent("wrong-ipad.ipsw"); try Data(repeating: 0, count: 1_100_001).write(to: file)
+    let manifest = try PropertyListSerialization.data(fromPropertyList: ["SupportedProductTypes": ["iPad7,12"]], format: .xml, options: 0)
+    let runner = SequenceCommandRunner([result("BuildManifest.plist\nRestore.plist\n"), CommandResult(status: 0, stdout: manifest, stderr: Data())])
+    let expected = IPSWRelease(platform: .iPadOS, version: "18.7.10", build: "22H374", downloadURL: sampleURL, supportedDevices: ["iPad7,11"])
+    #expect(throws: DFUError.self) { try IPSWValidator(runner: runner).validate(file, release: expected, verifyChecksum: false) }
+}
+
+@Test func dfuControllerRejectsAutomaticEntryForIPhone() {
+    struct PhoneDiscovery: DeviceDiscovering { func devices() throws -> [DFUDevice] { [DFUDevice(family: .iPhone, state: .normal, ecid: "SYNTHETIC-ECID")] } }
+    #expect(throws: DFUError.self) { try DFUController(discovery: PhoneDiscovery(), runner: CapturingRunner(), tool: URL(fileURLWithPath: "/tool")).enterDFU(timeout: 0) }
+}
+
+@Test func targetedRestoreSelectsOneDeviceAndKeepsECIDArgument() throws {
+    let root = try temporaryDirectory(), ipsw = root.appendingPathComponent("phone.ipsw"); try Data(repeating: 0, count: 1_100_001).write(to: ipsw)
+    let manifest = try PropertyListSerialization.data(fromPropertyList: ["SupportedProductTypes": ["iPhone15,2"]], format: .xml, options: 0)
+    let runner = SequenceCommandRunner([result("BuildManifest.plist\nRestore.plist\n"), result("BuildManifest.plist\nRestore.plist\n"), CommandResult(status: 0, stdout: manifest, stderr: Data())])
+    struct TwoDevices: DeviceDiscovering { func devices() throws -> [DFUDevice] { [DFUDevice(family: .mac, state: .dfu, ecid: "MAC"), DFUDevice(family: .iPhone, state: .dfu, ecid: "PHONE", productType: "iPhone15,2")] } }
+    let command = try RestoreEngine(discovery: TwoDevices(), runner: runner, cfgutil: URL(fileURLWithPath: "/cfgutil")).command(for: .targetedRestore(ipsw, ecid: "PHONE"))
+    #expect(command.2.family == .iPhone); #expect(command.1.contains("PHONE")); #expect(command.1.suffix(2) == ["--ipsw", ipsw.path])
 }
 
 @Test func sortsVersionsNumericallyAndSelectsLatest() async throws {
@@ -92,6 +240,14 @@ private actor MockDownloader: IPSWDownloading {
 @Test func liveAppleCatalogueOptIn() async throws {
     guard ProcessInfo.processInfo.environment["DFU_LIVE_TESTS"] == "1" else { return }
     let releases = try await AppleIPSWCatalogue().releases(); #expect(!releases.isEmpty); #expect(releases.allSatisfy { $0.downloadURL.host == "updates.cdn-apple.com" })
+}
+
+@Test func liveAppleMobileCatalogueOptIn() async throws {
+    guard ProcessInfo.processInfo.environment["DFU_LIVE_TESTS"] == "1" else { return }
+    let releases = try await AppleMobileIPSWCatalogue().releases()
+    #expect(releases.contains { $0.platform == .iOS && $0.supportedDevices.contains(where: { $0.hasPrefix("iPhone") }) })
+    #expect(releases.contains { $0.platform == .iPadOS && $0.supportedDevices.contains(where: { $0.hasPrefix("iPad") }) })
+    #expect(releases.allSatisfy { $0.downloadURL.host?.hasSuffix("apple.com") == true && $0.signingStatus == .appleCatalogue && $0.isSigned == nil })
 }
 
 @Test func existingErrorsRemainUseful() { #expect(DFUError.targetNotInDFU.localizedDescription.contains("not in DFU")); #expect(DFUError.multipleTargets(2).localizedDescription.contains("2")) }
@@ -358,10 +514,10 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
 }
 
 @Test func buildVersionAndDiagnosticsMetadataPropagate() throws {
-    #expect(BuildMetadata.displayVersion == "0.5.0 (1)")
+    #expect(BuildMetadata.displayVersion == "0.6.0 (1)")
     #expect(BuildMetadata.helperProtocolVersion == 1)
     let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .signedHelper, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
-    #expect(text.contains("App version: 0.5.0 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+    #expect(text.contains("App version: 0.6.0 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
     #expect(text.contains("Helper registration signing: Unsupported"))
 }
 
@@ -401,7 +557,7 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
 
 @Test func releaseCheckParsesVersionAndRejectsMalformedMetadata() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.5.0")
+    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.6.0")
     let malformed = try temporaryDirectory().appendingPathComponent("Version.env"); try Data("MARKETING_VERSION=bad!\n".utf8).write(to: malformed)
     #expect(try releaseLibrary("validate_version_metadata \"\(malformed.path)\"").0 != 0)
     #expect(try releaseLibrary("metadata_value /definitely/missing MARKETING_VERSION").0 != 0)
@@ -411,8 +567,18 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
     struct Acceptance: Decodable {
         struct Hardware: Decodable { let displayName: String; let identifier: String }
         struct Results: Decodable { let normalDetection, guiEnterDFU, sameECIDVerification, guiRevive, guiRestore, liveProgress, targetRestartVerification: String }
+        struct MobileHardware: Decodable {
+            struct Results: Decodable { let normalDetection, recoveryDetection, guidedDFU, sameECIDVerification, imageDiscovery, guiImageDownload, ipswValidation, guiRestore, liveProgress, targetRestartVerification: String }
+            let displayName, productType, acceptanceDate, cableObservation, scopeNote: String; let results: Results
+        }
+        struct IPadHardware: Decodable {
+            struct Results: Decodable { let normalDetection, recoveryDetection, guidedDFU, sameECIDVerification, imageDiscovery, guiImageDownload, ipswValidation, guiRestore, liveProgress, targetRestartVerification: String }
+            struct TimingObservation: Decodable { let clock: String; let disappearanceSeconds, releaseCueSeconds, dfuEnumerationSeconds: Double }
+            let displayName, productType, modelNumber, observationDate, cableObservation, scopeNote: String
+            let results: Results; let timingObservation: TimingObservation
+        }
         let appVersion, distributionMode, acceptanceDate: String
-        let hardware: Hardware; let results: Results
+        let hardware: Hardware; let results: Results; let mobileHardware: MobileHardware; let iPadHardware: IPadHardware
     }
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let value = try JSONDecoder().decode(Acceptance.self, from: Data(contentsOf: root.appendingPathComponent("Config/HardwareAcceptance.json")))
@@ -420,8 +586,39 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
     #expect(value.hardware.displayName == "MacBook Air M2"); #expect(value.hardware.identifier == "Mac14,2")
     #expect(!value.acceptanceDate.isEmpty)
     #expect([value.results.normalDetection, value.results.guiEnterDFU, value.results.sameECIDVerification, value.results.guiRevive, value.results.guiRestore, value.results.liveProgress, value.results.targetRestartVerification].allSatisfy { $0 == "PASS" })
+    #expect(value.mobileHardware.displayName == "iPhone 6"); #expect(value.mobileHardware.productType == "iPhone7,2")
+    #expect([value.mobileHardware.results.normalDetection, value.mobileHardware.results.recoveryDetection, value.mobileHardware.results.guidedDFU, value.mobileHardware.results.sameECIDVerification, value.mobileHardware.results.imageDiscovery, value.mobileHardware.results.guiImageDownload, value.mobileHardware.results.ipswValidation, value.mobileHardware.results.guiRestore, value.mobileHardware.results.liveProgress, value.mobileHardware.results.targetRestartVerification].allSatisfy { $0 == "PASS" })
+    #expect(value.mobileHardware.cableObservation.contains("not a universal")); #expect(value.mobileHardware.scopeNote.contains("Broader"))
+    #expect(value.iPadHardware.displayName == "iPad (7th generation) Wi-Fi"); #expect(value.iPadHardware.productType == "iPad7,11"); #expect(value.iPadHardware.modelNumber == "A2197")
+    #expect([value.iPadHardware.results.normalDetection, value.iPadHardware.results.guidedDFU, value.iPadHardware.results.sameECIDVerification, value.iPadHardware.results.imageDiscovery, value.iPadHardware.results.guiImageDownload, value.iPadHardware.results.ipswValidation].allSatisfy { $0 == "PASS" })
+    #expect([value.iPadHardware.results.recoveryDetection, value.iPadHardware.results.guiRestore, value.iPadHardware.results.liveProgress, value.iPadHardware.results.targetRestartVerification].allSatisfy { $0 == "PENDING" })
+    #expect(value.iPadHardware.timingObservation.clock == "monotonic")
+    #expect(value.iPadHardware.timingObservation.disappearanceSeconds == 5.370)
+    #expect(value.iPadHardware.timingObservation.releaseCueSeconds == 6.438)
+    #expect(value.iPadHardware.timingObservation.dfuEnumerationSeconds == 17.170)
+    #expect(value.iPadHardware.cableObservation.contains("does not establish that USB-A to Lightning is required"))
+    #expect(value.iPadHardware.scopeNote.contains("Recovery detection") && value.iPadHardware.scopeNote.contains("remain pending"))
     let releaseCheck = try String(contentsOf: root.appendingPathComponent("scripts/release-check.sh"), encoding: .utf8)
-    #expect(releaseCheck.contains("pass \"Hardware acceptance\"")); #expect(releaseCheck.contains("Hardware coverage"))
+    #expect(releaseCheck.contains("pass \"Hardware acceptance\"")); #expect(releaseCheck.contains("pass \"iPhone acceptance\"")); #expect(releaseCheck.contains("pass \"iPad acceptance\"")); #expect(releaseCheck.contains("Recovery/Restore pending"))
+}
+
+@Test func sanitizedIPhone72HardwareFixturesContainNoRealIdentifiers() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let names = ["iphone7,2-normal-status.txt", "iphone7,2-recovery-observation.txt", "iphone7,2-dfu-observation.txt", "iphone7,2-restore-success.txt"]
+    for name in names {
+        let text = try String(contentsOf: root.appendingPathComponent("Tests/Fixtures/\(name)"), encoding: .utf8)
+        #expect(text.contains("iPhone7,2")); #expect(text.contains("SYNTHETIC") || text.contains("0x1234567890ABCDEF"))
+        #expect(!text.contains("Users/")); #expect(!text.localizedCaseInsensitiveContains("hallifax"))
+    }
+}
+
+@Test func sanitizedIPad711DFUFixtureRecordsOnlyTheAcceptedMilestone() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let text = try String(contentsOf: root.appendingPathComponent("Tests/Fixtures/ipad7,11-dfu-observation.txt"), encoding: .utf8)
+    #expect(text.contains("iPad7,11")); #expect(text.contains("SYNTHETIC-IPAD-SERIAL")); #expect(text.contains("SYNTHETIC-IPAD-UDID"))
+    #expect(text.contains("+5.370 s")); #expect(text.contains("+6.438 s")); #expect(text.contains("+17.170 s"))
+    #expect(text.contains("Same-ECID verification: PASS")); #expect(text.contains("Restore initiated: No"))
+    #expect(!text.contains("Recovery detected")); #expect(!text.contains("Restore completed")); #expect(!text.contains("Users/")); #expect(!text.localizedCaseInsensitiveContains("hallifax"))
 }
 
 @Test func releaseCheckArtifactIdentitySignatureAndResults() throws {
