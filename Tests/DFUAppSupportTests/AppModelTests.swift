@@ -111,9 +111,19 @@ private struct HoldingRestore: RestoreOperating {
 private struct AppMockDFU: DFUOperating { func enterDFU(timeout: TimeInterval) throws {} }
 private struct CancelledDFU: DFUOperating { func enterDFU(timeout: TimeInterval) throws { throw PrivilegedDFUClientError.authorizationCancelled } }
 private final class AppMockLogger: @unchecked Sendable, OperationLogging {
-    private let lock = NSLock(); private(set) var starts = 0; private(set) var lastECID: String?
+    private let lock = NSLock(); private(set) var starts = 0; private(set) var lastECID: String?; private var appended: [String] = []
     func start(operation: String, target: DFUDevice?, release: IPSWRelease?) throws -> URL { lock.withLock { starts += 1; lastECID = target?.ecid }; return URL(fileURLWithPath: "/tmp/mock-operation.log") }
-    func append(_ message: String, to url: URL) throws {}
+    func append(_ message: String, to url: URL) throws { lock.withLock { appended.append(message) } }
+    var messages: [String] { lock.withLock { appended } }
+}
+private final class SequencedDFUFailure: @unchecked Sendable, DFUOperating {
+    private let lock = NSLock(); private var errors: [Error?]; private(set) var calls = 0
+    init(_ errors: [Error?]) { self.errors = errors }
+    func enterDFU(timeout: TimeInterval) throws {
+        let error = lock.withLock { () -> Error? in calls += 1; return errors.isEmpty ? nil : errors.removeFirst() }
+        if let error { throw error }
+    }
+    var callCount: Int { lock.withLock { calls } }
 }
 private let noOpLogger = AppMockLogger()
 
@@ -498,7 +508,8 @@ private let noOpLogger = AppMockLogger()
     let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: CancelledDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
     await app.refreshDiagnosticsAndTarget(); #expect(app.canEnterDFU)
     await app.enterDFU()
-    #expect(app.presentedError == "Administrator authorization was cancelled.")
+    #expect(app.presentedError?.contains("Administrator authorization was cancelled.") == true)
+    #expect(app.presentedError?.contains("try Enter DFU again") == true); #expect(app.canEnterDFU)
     if case .failed = app.restoreState {} else { Issue.record("Expected recoverable failure state") }
 }
 
@@ -644,6 +655,39 @@ private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscoverin
     #expect(!app.operationInProgress); #expect(app.targetWorkflowState == .recovery)
     await app.refreshDiagnosticsAndTarget(); #expect(app.target?.state == .recovery); #expect(app.canRevive)
     app.revive(); #expect(await waitForRestoreState(app) { _ in engine.callCount == 2 && !app.operationInProgress })
+}
+
+@Test @MainActor func observedVDMFailureIsConciseLoggedAndRetryableAfterRefresh() async {
+    let raw = "Mac type: J414sAP\nLooking for HPM devices...\nFound: IOService:/fixture\nConnection: Source\nStatus: APP\nUnlocking... OK\nEntering DBMa mode... Status: DBMa\nRebooting target into DFU mode... VDM failed (reply: 0x05ac8092)\nExiting DBMa mode... OK\nVDM failed"
+    let transition = MacVDMToolFailure.classify(status: 255, output: raw)
+    let controller = SequencedDFUFailure([transition, transition])
+    let logger = AppMockLogger()
+    let normal = DFUDevice(state: .normal, model: "MacBookAir10,1", ecid: "0xABC")
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [normal]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: controller, operationLogger: logger, requiresPrivilegedHelperSetup: false)
+
+    await app.refreshDiagnosticsAndTarget(); #expect(app.canEnterDFU)
+    await app.enterDFU()
+    #expect(!app.operationInProgress); #expect(app.targetWorkflowState == .normal); #expect(app.canEnterDFU)
+    if case .failed(let message) = app.restoreState {
+        #expect(message.contains("did not accept the DFU transition")); #expect(message.contains("try Enter DFU again"))
+        #expect(!message.contains("Mac type:")); #expect(!message.contains("0x05ac8092")); #expect(!message.contains("DBMa"))
+    } else { Issue.record("Expected concise DFU failure") }
+    #expect(app.presentedError?.contains("did not accept the DFU transition") == true)
+    #expect(app.presentedError?.contains("Mac type:") == false)
+    #expect(logger.messages.joined(separator: "\n").contains(raw)); #expect(logger.messages.joined(separator: "\n").contains("Exit status: 255"))
+
+    await app.refreshDiagnosticsAndTarget(); #expect(app.target?.state == .normal); #expect(app.canEnterDFU)
+    await app.enterDFU(); #expect(controller.callCount == 2); #expect(!app.operationInProgress)
+}
+
+@Test func dfuFailurePresentationKeepsAuthorizationToolAndLaunchFailuresDistinct() {
+    let authorization = DFUFailurePresentation(error: CommunityDFUError.authorizationFailed("fixture authorization detail"))
+    #expect(authorization.summary.contains("authorize DFU mode")); #expect(authorization.diagnosticDetails.contains("fixture authorization detail"))
+    let unavailable = DFUFailurePresentation(error: DFUError.toolUnavailable("bundled/project macvdmtool"))
+    #expect(unavailable.summary.contains("bundled DFU component is unavailable"))
+    let launch = DFUFailurePresentation(error: MacVDMToolFailure(kind: .processLaunch, exitStatus: -1, output: "fixture launch failure"))
+    #expect(launch.summary.contains("Couldn’t start")); #expect(launch.diagnosticDetails.contains("fixture launch failure"))
+    #expect(authorization.summary != unavailable.summary && unavailable.summary != launch.summary)
 }
 
 @Test @MainActor func explicitRefreshDuringReconnectPreventsStaleVerifierOverwrite() async {

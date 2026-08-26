@@ -21,13 +21,15 @@ public struct DFUController: Sendable {
         guard existing[0].family == .mac else { throw DFUError.toolUnavailable("automatic DFU entry is available only for Mac targets; place iPhone or iPad into DFU manually") }
         let expectedECID = existing[0].ecid
         let invocation = Self.command(tool: tool, isRoot: geteuid() == 0)
-        let result = try runner.runInteractive(invocation.executable, arguments: invocation.arguments)
+        let result: CommandResult
+        do { result = try runner.runInteractive(invocation.executable, arguments: invocation.arguments) }
+        catch { throw MacVDMToolFailure(kind: .processLaunch, exitStatus: -1, output: error.localizedDescription) }
         guard result.status == 0 else {
-            if invocation.executable.path == "/usr/bin/sudo" {
+            if invocation.executable.path == "/usr/bin/sudo", Self.isAuthorizationFailure(result.combinedOutput) {
                 let detail = result.combinedOutput.isEmpty ? "sudo exited with status \(result.status). Authentication may have failed or been cancelled." : result.combinedOutput
                 throw DFUError.privilegeRequired(detail)
             }
-            throw DFUError.commandFailed(command: "macvdmtool dfu", status: result.status, output: result.combinedOutput)
+            throw MacVDMToolFailure.classify(status: result.status, output: result.combinedOutput)
         }
 
         let deadline = Date().addingTimeInterval(timeout)
@@ -44,6 +46,11 @@ public struct DFUController: Sendable {
 
     public static func command(tool: URL, isRoot: Bool) -> (executable: URL, arguments: [String]) {
         isRoot ? (tool, ["dfu"]) : (URL(fileURLWithPath: "/usr/bin/sudo"), [tool.path, "dfu"])
+    }
+
+    private static func isAuthorizationFailure(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        return lower.contains("authentication failed") || lower.contains("incorrect password") || lower.contains("a password is required") || lower.contains("not in the sudoers") || lower.contains("no tty present") || lower.contains("a terminal is required")
     }
 }
 

@@ -63,6 +63,12 @@ scripts/install-local.sh
 
 Open `/Applications/DFUUtility.app`. To uninstall the local build, run `scripts/uninstall-local.sh`.
 
+The normal installer builds, packages, verifies, and installs the app without running the repository test suite, so it works with supported Command Line Tools installations that do not include the Swift Testing module. Contributors with the full development toolchain can run tests before installation explicitly:
+
+```sh
+scripts/install-local.sh --test
+```
+
 ## Usage
 
 1. Connect the target with a data-capable cable and select it if more than one device is attached.

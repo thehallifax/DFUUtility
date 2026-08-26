@@ -13,6 +13,48 @@ public enum AppRestoreState: Equatable {
     case failed(String)
 }
 
+public struct DFUFailurePresentation: Equatable, Sendable {
+    public let summary: String
+    public let recoverySuggestion: String?
+    public let diagnosticDetails: String
+    public var userMessage: String { [summary, recoverySuggestion].compactMap { $0 }.joined(separator: "\n") }
+
+    public init(error: Error) {
+        diagnosticDetails = Self.diagnostics(for: error)
+        switch error {
+        case let failure as MacVDMToolFailure:
+            summary = failure.errorDescription ?? "Couldn’t enter DFU mode."
+            recoverySuggestion = failure.recoverySuggestion
+        case CommunityDFUError.authorizationCancelled, PrivilegedDFUClientError.authorizationCancelled:
+            summary = "Administrator authorization was cancelled."
+            recoverySuggestion = "No changes were made to the target Mac. You can try Enter DFU again."
+        case CommunityDFUError.authorizationFailed:
+            summary = "Couldn’t authorize DFU mode. macOS did not grant administrator authorization."
+            recoverySuggestion = "Try Enter DFU again and approve the standard macOS administrator prompt."
+        case CommunityDFUError.authorizationRequestUnavailable:
+            summary = "Couldn’t request administrator authorization for DFU mode."
+            recoverySuggestion = "Quit and reopen DFUUtility, then try again."
+        case DFUError.toolUnavailable:
+            summary = "The bundled DFU component is unavailable."
+            recoverySuggestion = "Rebuild or reinstall DFUUtility, then try again."
+        case DFUError.noTarget:
+            summary = "Couldn’t enter DFU mode because no target Mac was detected."
+            recoverySuggestion = "Check the data cable and target connection, then click Refresh."
+        default:
+            summary = "Couldn’t enter DFU mode."
+            recoverySuggestion = "Use View Log for technical details, then check the target and cable before trying again."
+        }
+    }
+
+    private static func diagnostics(for error: Error) -> String {
+        if let failure = error as? MacVDMToolFailure { return failure.diagnosticDescription }
+        if case .authorizationFailed(let detail) = error as? CommunityDFUError { return "Authorization failed:\n\(detail)" }
+        if case .authorizationRequestUnavailable(let detail) = error as? CommunityDFUError { return "Authorization request unavailable:\n\(detail)" }
+        if case .commandFailed(let command, let status, let output) = error as? DFUError { return "Command: \(command)\nExit status: \(status)\nRaw output:\n\(output)" }
+        return NSErrorDiagnostics.describe(error)
+    }
+}
+
 public enum OperationProgressReducer {
     public static func reduce(_ current: AppRestoreState, event: RestoreEvent, operation: String) -> AppRestoreState {
         switch event {
@@ -566,8 +608,10 @@ public final class AppModel: ObservableObject {
             if let log { try? operationLogger.append("Transition result: success\nFinal verified state: DFU, same ECID", to: log) }
             restoreState = .idle; await refreshDiagnosticsAndTarget()
         } catch {
-            if let log { try? operationLogger.append("FAILED: \(error.localizedDescription)", to: log) }
-            restoreState = .failed(error.localizedDescription); presentedError = error.localizedDescription
+            let failure = DFUFailurePresentation(error: error)
+            if let log { try? operationLogger.append("FAILED\n\(failure.diagnosticDetails)\nOperation context cleared", to: log) }
+            restoreState = .failed(failure.userMessage)
+            presentedError = failure.userMessage + (log == nil ? "" : "\n\nTechnical details were saved to the operation log. Use View Log to review them.")
         }
     }
 

@@ -1,11 +1,15 @@
 #!/bin/sh
 set -eu
 
-usage() { echo "Usage: scripts/install-local.sh [--skip-tests]" >&2; exit "${1:-64}"; }
-skip_tests=0
+usage() {
+  echo "Usage: scripts/install-local.sh [--test]" >&2
+  echo "  --test  Run the repository test suite before packaging and installation." >&2
+  exit "${1:-64}"
+}
+run_tests=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --skip-tests) skip_tests=1; shift ;;
+    --test) run_tests=1; shift ;;
     --help|-h) usage 0 ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
@@ -17,7 +21,7 @@ destination="/Applications/DFUUtility.app"
 stage="$root/.build/local-install/DFUUtility.app"
 
 cd "$root"
-if [ "$skip_tests" -eq 0 ]; then swift test; fi
+if [ "$run_tests" -eq 1 ]; then swift test; fi
 scripts/package-app.sh release
 scripts/verify-app.sh "$source_app"
 
@@ -38,5 +42,5 @@ fi
 rmdir "$root/.build/local-install"
 
 echo "Installed Community build: $destination"
-echo "Open Applications → DFUUtility. Administrator authorization is requested only when you click Enter DFU."
+echo "Open Applications → DFUUtility. Administrator authorization is requested only for the Community Mac Enter DFU operation; guided iPhone/iPad DFU uses physical buttons and does not request it."
 echo "No background helper was registered."

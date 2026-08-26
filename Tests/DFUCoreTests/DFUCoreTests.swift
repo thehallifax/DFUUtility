@@ -306,8 +306,22 @@ private struct ThrowingRunner: CommandRunning {
     let tool = try executableFile(in: try temporaryDirectory())
     #expect(throws: CommunityDFUError.authorizationCancelled) { try CommunityDFURequest(runner: CapturingRunner(status: 1, output: "execution error: User canceled. (-128)"), tool: tool).enterDFU() }
     #expect(throws: CommunityDFUError.authorizationFailed("execution error: Not authorized. (-60007)")) { try CommunityDFURequest(runner: CapturingRunner(status: 1, output: "execution error: Not authorized. (-60007)"), tool: tool).enterDFU() }
-    #expect(throws: CommunityDFUError.transitionFailed("macvdmtool: device not found")) { try CommunityDFURequest(runner: CapturingRunner(status: 1, output: "macvdmtool: device not found"), tool: tool).enterDFU() }
-    #expect(throws: CommunityDFUError.self) { try CommunityDFURequest(runner: ThrowingRunner(), tool: tool).enterDFU() }
+    #expect(throws: MacVDMToolFailure.self) { try CommunityDFURequest(runner: CapturingRunner(status: 1, output: "macvdmtool: device not found"), tool: tool).enterDFU() }
+    #expect(throws: MacVDMToolFailure.self) { try CommunityDFURequest(runner: ThrowingRunner(), tool: tool).enterDFU() }
+}
+
+@Test func macVDMToolFailuresAreClassifiedWithoutDecodingOpaqueReply() {
+    let observed = "Mac type: J414sAP\nLooking for HPM devices...\nFound: IOService:/fixture\nConnection: Source\nStatus: APP\nUnlocking... OK\nEntering DBMa mode... Status: DBMa\nRebooting target into DFU mode... VDM failed (reply: 0x05ac8092)\nExiting DBMa mode... OK\nVDM failed"
+    let communication = MacVDMToolFailure.classify(status: 255, output: observed)
+    #expect(communication.kind == .targetCommunication); #expect(communication.exitStatus == 255)
+    #expect(communication.replyCode == "0x05ac8092")
+    #expect(communication.localizedDescription.contains("did not accept the DFU transition"))
+    #expect(communication.diagnosticDescription.contains(observed))
+    let wrapped = MacVDMToolFailure.classify(status: 1, output: observed + "\nexecution error: VDM failed (255)")
+    #expect(wrapped.exitStatus == 255); #expect(wrapped.wrapperExitStatus == 1)
+    let missing = MacVDMToolFailure.classify(status: 255, output: "Looking for HPM devices...\nNo matching devices")
+    #expect(missing.kind == .noCompatibleTargetPath)
+    #expect(MacVDMToolFailure.classify(status: 7, output: "unexpected fixture failure").kind == .unknown)
 }
 
 @Test func communityDiagnosticsDoNotRequireHelperRegistration() {
@@ -375,6 +389,25 @@ private struct NormalDiscovery: DeviceDiscovering { func devices() throws -> [DF
 @Test func privilegeFailureIsPropagatedClearly() {
     let controller = DFUController(discovery: NormalDiscovery(), runner: PrivilegeFailureRunner(), tool: URL(fileURLWithPath: "/tool"))
     #expect(throws: DFUError.privilegeRequired("sudo: authentication failed\n")) { try controller.enterDFU(timeout: 0) }
+}
+
+private struct InteractiveVDMFailureRunner: CommandRunning {
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult { CommandResult(status: 255, stdout: Data("VDM failed (reply: 0x05ac8092)\nVDM failed\n".utf8), stderr: Data()) }
+    func runInteractive(_ executable: URL, arguments: [String]) throws -> CommandResult { try run(executable, arguments: arguments) }
+}
+
+@Test func sudoWrappedToolFailureIsNotMisclassifiedAsAuthorization() {
+    let controller = DFUController(discovery: NormalDiscovery(), runner: InteractiveVDMFailureRunner(), tool: URL(fileURLWithPath: "/tool"))
+    do { try controller.enterDFU(timeout: 0); Issue.record("Expected VDM failure") }
+    catch let failure as MacVDMToolFailure { #expect(failure.kind == .targetCommunication); #expect(failure.replyCode == "0x05ac8092") }
+    catch { Issue.record("Unexpected classification: \(error)") }
+}
+
+@Test func directToolProcessLaunchFailureIsClassified() {
+    let controller = DFUController(discovery: NormalDiscovery(), runner: ThrowingRunner(), tool: URL(fileURLWithPath: "/tool"))
+    do { try controller.enterDFU(timeout: 0); Issue.record("Expected launch failure") }
+    catch let failure as MacVDMToolFailure { #expect(failure.kind == .processLaunch); #expect(!failure.output.isEmpty) }
+    catch { Issue.record("Unexpected classification: \(error)") }
 }
 
 private final class InteractiveRunnerSpy: @unchecked Sendable, CommandRunning {
@@ -546,6 +579,9 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     #expect(text.contains("/Applications/DFUUtility.app"))
     #expect(text.contains("scripts/package-app.sh release"))
     #expect(text.contains("scripts/verify-app.sh"))
+    #expect(text.contains("--test")); #expect(!text.contains("--skip-tests"))
+    #expect(text.contains("if [ \"$run_tests\" -eq 1 ]; then swift test; fi"))
+    #expect(text.contains("Community Mac Enter DFU operation")); #expect(text.contains("guided iPhone/iPad DFU"))
 }
 
 private func releaseLibrary(_ command: String) throws -> (Int32, String) {

@@ -29,15 +29,77 @@ public enum CommunityDFUError: LocalizedError, Equatable {
     case authorizationCancelled
     case authorizationFailed(String)
     case authorizationRequestUnavailable(String)
-    case transitionFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .authorizationCancelled: "Administrator authorization was cancelled."
         case .authorizationFailed(let detail): "Administrator authorization failed.\n\(detail)"
         case .authorizationRequestUnavailable(let detail): "Could not request administrator authorization.\n\(detail)"
-        case .transitionFailed(let detail): "DFU transition failed.\n\(detail)"
         }
+    }
+}
+
+public enum MacVDMToolFailureKind: String, Equatable, Sendable {
+    case noCompatibleTargetPath
+    case targetCommunication
+    case processLaunch
+    case unknown
+}
+
+public struct MacVDMToolFailure: LocalizedError, Equatable, Sendable {
+    public let kind: MacVDMToolFailureKind
+    public let exitStatus: Int32
+    public let wrapperExitStatus: Int32?
+    public let output: String
+    public let replyCode: String?
+
+    public init(kind: MacVDMToolFailureKind, exitStatus: Int32, output: String, replyCode: String? = nil, wrapperExitStatus: Int32? = nil) {
+        self.kind = kind; self.exitStatus = exitStatus; self.output = output; self.replyCode = replyCode; self.wrapperExitStatus = wrapperExitStatus
+    }
+
+    public static func classify(status: Int32, output: String) -> Self {
+        let lower = output.lowercased()
+        let kind: MacVDMToolFailureKind
+        if lower.contains("no matching devices") || lower.contains("no connection detected") || lower.contains("no rid") {
+            kind = .noCompatibleTargetPath
+        } else if lower.contains("vdm failed") || lower.contains("failed to send vdm") || lower.contains("did not get a reply to vdm") || lower.contains("failed to enter dbma mode") || lower.contains("failed to unlock device") || lower.contains("readregister failed") || lower.contains("writeregister failed") {
+            kind = .targetCommunication
+        } else {
+            kind = .unknown
+        }
+        let reply = output.range(of: #"(?i)VDM failed \(reply:\s*(0x[0-9a-f]+)\)"#, options: .regularExpression).flatMap { range -> String? in
+            let match = String(output[range]); return match.range(of: #"0x[0-9a-f]+"#, options: [.regularExpression, .caseInsensitive]).map { String(match[$0]) }
+        }
+        let toolStatus: Int32? = output.range(of: #"\(([0-9]{1,3})\)\s*$"#, options: .regularExpression).flatMap { range in
+            String(output[range]).filter(\.isNumber).isEmpty ? nil : Int32(String(output[range]).filter(\.isNumber))
+        }
+        return Self(kind: kind, exitStatus: toolStatus ?? status, output: output, replyCode: reply, wrapperExitStatus: toolStatus == nil || toolStatus == status ? nil : status)
+    }
+
+    public var errorDescription: String? {
+        switch kind {
+        case .noCompatibleTargetPath: "Couldn’t enter DFU mode. No compatible USB-C DFU connection was found."
+        case .targetCommunication: "Couldn’t enter DFU mode. The connected Mac was detected, but it did not accept the DFU transition."
+        case .processLaunch: "Couldn’t start the bundled DFU component."
+        case .unknown: "Couldn’t enter DFU mode because the bundled DFU component failed."
+        }
+    }
+
+    public var recoverySuggestion: String? {
+        switch kind {
+        case .noCompatibleTargetPath: "Confirm the data cable is connected to the correct DFU port, then try again."
+        case .targetCommunication: "Keep the USB-C cable connected, confirm the target Mac is powered on normally, then try Enter DFU again."
+        case .processLaunch: "Rebuild or reinstall DFUUtility, then try again."
+        case .unknown: "Use View Log for technical details, then retry only after checking the target and cable."
+        }
+    }
+
+    public var diagnosticDescription: String {
+        var values = ["macvdmtool failure classification: \(kind.rawValue)", "Exit status: \(exitStatus)"]
+        if let wrapperExitStatus { values.append("Authorization wrapper exit status: \(wrapperExitStatus)") }
+        if let replyCode { values.append("VDM reply: \(replyCode)") }
+        values.append("Raw output:\n\(output.isEmpty ? "<none>" : output)")
+        return values.joined(separator: "\n")
     }
 }
 
@@ -61,7 +123,7 @@ public struct CommunityDFURequest: PrivilegedDFURequesting {
         }
         let result: CommandResult
         do { result = try runner.run(Self.osascriptURL, arguments: ["-e", Self.appleScript(tool: tool)]) }
-        catch { throw CommunityDFUError.authorizationRequestUnavailable(error.localizedDescription) }
+        catch { throw MacVDMToolFailure(kind: .processLaunch, exitStatus: -1, output: error.localizedDescription) }
         guard result.status == 0 else {
             let output = result.combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
             let lower = output.lowercased()
@@ -71,7 +133,7 @@ public struct CommunityDFURequest: PrivilegedDFURequesting {
             if lower.contains("(-60007)") || lower.contains("not authorized") || lower.contains("authorization denied") {
                 throw CommunityDFUError.authorizationFailed(output.isEmpty ? "osascript exited with status \(result.status)." : output)
             }
-            throw CommunityDFUError.transitionFailed(output.isEmpty ? "macvdmtool exited through osascript with status \(result.status)." : output)
+            throw MacVDMToolFailure.classify(status: result.status, output: output.isEmpty ? "macvdmtool exited through osascript with status \(result.status)." : output)
         }
     }
 
