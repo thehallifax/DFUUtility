@@ -95,7 +95,7 @@ struct ContentView: View {
                         Button("Enter DFU…") { if model.prepareMobileDFUAssistant() { showMobileDFU = true } }.disabled(!model.canUseMobileDFUAssistant)
                     }
                     Button("Revive \(model.target?.family == .mac ? "Mac" : "Device")") { model.revive() }.disabled(!model.canRevive)
-                    Button("Refresh") { Task { await model.refreshDiagnosticsAndTarget() } }
+                    Button("Refresh") { Task { await model.refreshDiagnosticsAndTarget() } }.disabled(model.operationInProgress)
                 }
                 if !model.isDemoMode && model.privilegeMode == .signedHelper && !model.privilegedHelperState.isReady { helperSetup }
                 switch model.targetDFUGuidance {

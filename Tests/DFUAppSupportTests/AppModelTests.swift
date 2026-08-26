@@ -79,6 +79,22 @@ private final class CountingAppDiscovery: @unchecked Sendable, DeviceDiscovering
     var callCount: Int { lock.withLock { calls } }
 }
 private struct AppMockRestore: RestoreOperating { func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> { AsyncThrowingStream { $0.yield(.completed); $0.finish() } } }
+private final class RepeatingCompletedRestore: @unchecked Sendable, RestoreOperating {
+    private let lock = NSLock(); private var actions: [RestoreAction] = []
+    func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> {
+        lock.withLock { actions.append(action) }
+        return AsyncThrowingStream { $0.yield(.completed); $0.finish() }
+    }
+    var callCount: Int { lock.withLock { actions.count } }
+}
+private final class FailingRestore: @unchecked Sendable, RestoreOperating {
+    private let lock = NSLock(); private(set) var calls = 0
+    func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> {
+        lock.withLock { calls += 1 }
+        return AsyncThrowingStream { $0.finish(throwing: DFUError.commandFailed(command: "cfgutil revive", status: 1, output: "fixture failure")) }
+    }
+    var callCount: Int { lock.withLock { calls } }
+}
 private final class CountingRestore: @unchecked Sendable, RestoreOperating {
     private let lock = NSLock(); private(set) var calls = 0
     func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> { lock.withLock { calls += 1 }; return AsyncThrowingStream { $0.finish() } }
@@ -566,6 +582,84 @@ private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscoverin
     #expect(app.targetWorkflowState == .normal); #expect(app.target?.state == .normal)
     #expect(app.target?.restoreProductType == "iPhone7,2"); #expect(app.canUseMobileDFUAssistant)
     if case .completed(let message) = app.restoreState { #expect(message.contains("Target restarted")) } else { Issue.record("Expected independent completion presentation") }
+}
+
+@Test @MainActor func completedRevivePreservesResultRefreshesAndAllowsSecondOperation() async {
+    let dfu = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xABC")
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let recovery = DFUDevice(state: .recovery, model: "Mac14,2", ecid: "0xABC")
+    let engine = RepeatingCompletedRestore()
+    let discovery = AppSequencedDiscovery([[dfu], [normal], [recovery], [normal]])
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: engine, dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, reconnectAttempts: 1, reconnectInterval: .zero)
+
+    await app.refreshDiagnosticsAndTarget(); app.revive()
+    #expect(await waitForRestoreState(app) { if case .completed = $0 { true } else { false } })
+    #expect(!app.operationInProgress); #expect(!app.reconnectInProgress); #expect(app.target?.state == .normal)
+    if case .completed(let message) = app.restoreState { #expect(message.contains("Revive completed successfully")) } else { Issue.record("Expected preserved Revive result") }
+
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.target?.state == .recovery); #expect(app.selectedTargetECID == "0xABC"); #expect(app.canRevive)
+    app.revive()
+    #expect(await waitForRestoreState(app) { _ in engine.callCount == 2 && !app.operationInProgress })
+}
+
+@Test @MainActor func completedRestorePreservesResultRefreshesAndAllowsSecondOperation() async {
+    let dfu = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xABC")
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let engine = RepeatingCompletedRestore()
+    let discovery = AppSequencedDiscovery([[dfu], [normal], [dfu], [normal]])
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: engine, dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, reconnectAttempts: 1, reconnectInterval: .zero)
+
+    await app.refreshDiagnosticsAndTarget(); await app.validateManualIPSW(testURL); #expect(app.canRestore)
+    app.restoreConfirmed()
+    #expect(await waitForRestoreState(app) { if case .completed = $0 { true } else { false } })
+    #expect(!app.operationInProgress); #expect(app.target?.state == .normal)
+
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.target?.state == .dfu); #expect(app.canRestore)
+    app.restoreConfirmed()
+    #expect(await waitForRestoreState(app) { _ in engine.callCount == 2 && !app.operationInProgress })
+}
+
+@Test @MainActor func reconnectTimeoutClearsBlockerAndLaterRefreshRecoversTarget() async {
+    let dfu = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xABC")
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let discovery = AppSequencedDiscovery([[dfu], [], [normal]])
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, reconnectAttempts: 1, reconnectInterval: .zero)
+
+    await app.refreshDiagnosticsAndTarget(); app.revive()
+    #expect(await waitForRestoreState(app) { if case .completed(let message) = $0 { message.contains("could not be verified") } else { false } })
+    #expect(!app.operationInProgress); #expect(app.target?.state == .dfu)
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.target?.state == .normal); #expect(app.canEnterDFU)
+}
+
+@Test @MainActor func failureClearsBlockerAndRefreshAllowsRetry() async {
+    let recovery = DFUDevice(state: .recovery, model: "Mac14,2", ecid: "0xABC")
+    let engine = FailingRestore(), discovery = AppSequencedDiscovery([[recovery], [recovery]])
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: engine, dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+
+    await app.refreshDiagnosticsAndTarget(); app.revive()
+    #expect(await waitForRestoreState(app) { if case .failed = $0 { true } else { false } })
+    #expect(!app.operationInProgress); #expect(app.targetWorkflowState == .recovery)
+    await app.refreshDiagnosticsAndTarget(); #expect(app.target?.state == .recovery); #expect(app.canRevive)
+    app.revive(); #expect(await waitForRestoreState(app) { _ in engine.callCount == 2 && !app.operationInProgress })
+}
+
+@Test @MainActor func explicitRefreshDuringReconnectPreventsStaleVerifierOverwrite() async {
+    let dfu = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xABC")
+    let refreshed = DFUDevice(state: .recovery, model: "Mac14,2", ecid: "0xABC")
+    let stale = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let discovery = AppSequencedDiscovery([[dfu], [], [refreshed], [stale]])
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, reconnectAttempts: 3, reconnectInterval: .seconds(1))
+
+    await app.refreshDiagnosticsAndTarget(); app.revive()
+    #expect(await waitForRestoreState(app) { if case .reconnecting = $0 { true } else { false } })
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.target?.state == .recovery); #expect(!app.operationInProgress)
+    try? await Task.sleep(for: .milliseconds(100))
+    #expect(app.target?.state == .recovery)
+    if case .completed(let message) = app.restoreState { #expect(message.contains("could not be verified")) } else { Issue.record("Expected preserved completion result") }
 }
 
 @Test func operationProgressNormalizesStageAndRetainsStepMetadata() {

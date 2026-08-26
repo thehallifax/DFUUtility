@@ -159,14 +159,18 @@ public final class AppModel: ObservableObject {
     private let operationLogger: any OperationLogging
     private let requiresPrivilegedHelperSetup: Bool
     private let targetDiscoveryAttempts: Int
+    private let reconnectAttempts: Int
+    private let reconnectInterval: Duration
     private var downloadTask: Task<Void, Never>?
+    private var operationTask: Task<Void, Never>?
+    private var operationGeneration: UInt64 = 0
 
-    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false, screenshotScenario: String? = nil, targetDiscoveryAttempts: Int = 1) {
+    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false, screenshotScenario: String? = nil, targetDiscoveryAttempts: Int = 1, reconnectAttempts: Int = 10, reconnectInterval: Duration = .seconds(2)) {
         let resolvedMode = privilegeMode ?? (requiresPrivilegedHelperSetup ? PrivilegeModeSelector.select() : .community)
         self.ipswService = ipswService; self.discovery = discovery; self.cache = cache; self.validator = validator
         self.diagnostics = diagnostics; self.restoreEngine = restoreEngine
         self.dfuController = dfuController ?? PrivilegedDFUOperator(discovery: discovery, client: resolvedMode == .signedHelper ? PrivilegedDFUClient() : CommunityDFURequest())
-        self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = resolvedMode == .signedHelper; self.privilegeMode = resolvedMode; self.isDemoMode = isDemoMode; self.screenshotScenario = screenshotScenario; self.targetDiscoveryAttempts = max(1, targetDiscoveryAttempts)
+        self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = resolvedMode == .signedHelper; self.privilegeMode = resolvedMode; self.isDemoMode = isDemoMode; self.screenshotScenario = screenshotScenario; self.targetDiscoveryAttempts = max(1, targetDiscoveryAttempts); self.reconnectAttempts = max(1, reconnectAttempts); self.reconnectInterval = reconnectInterval
     }
 
     public var target: DFUDevice? {
@@ -179,7 +183,7 @@ public final class AppModel: ObservableObject {
         case .running(let operation, _, _, _, _): if operation == "Enter DFU" { return .transitioning }; return operation == "Restore" ? .restoring : .reviving
         case .reconnecting: return .reconnecting
         case .completed: break
-        case .failed: return .failed
+        case .failed: break
         case .idle: break
         }
         switch target?.state {
@@ -234,11 +238,16 @@ public final class AppModel: ObservableObject {
     public var managedCacheDirectoryURL: URL { cache.directory }
     public func cacheRevealURL(for entry: ManagedIPSWEntry) -> URL { entry.url }
     public func prepareCacheDirectoryForReveal() -> URL? { do { try cache.prepare(); return cache.directory } catch { presentedError = "Unable to open the IPSW cache.\n\(error.localizedDescription)"; return nil } }
-    public var canEnterDFU: Bool { !isDemoMode && target?.family == .mac && target?.state == .normal && !hasSyntheticProductionIdentity && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && restoreState == .idle }
+    public var operationInProgress: Bool {
+        if case .running = restoreState { return true }
+        if case .reconnecting = restoreState { return true }
+        return false
+    }
+    public var reconnectInProgress: Bool { if case .reconnecting = restoreState { true } else { false } }
+    public var canEnterDFU: Bool { !isDemoMode && target?.family == .mac && target?.state == .normal && !hasSyntheticProductionIdentity && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && !operationInProgress }
     public var canUseMobileDFUAssistant: Bool {
         guard let target, target.family == .iPhone || target.family == .iPad, target.state == .normal || target.state == .recovery else { return false }
-        let operationInactive = if case .idle = restoreState { true } else if case .completed = restoreState { true } else { false }
-        return target.ecid?.isEmpty == false && MobileDFUInstructionProfile.profile(for: target) != nil && operationInactive
+        return target.ecid?.isEmpty == false && MobileDFUInstructionProfile.profile(for: target) != nil && !operationInProgress
     }
     public var targetDFUGuidance: TargetDFUGuidance? {
         guard !isDemoMode, let target, target.state == .normal || target.state == .recovery else { return nil }
@@ -254,9 +263,9 @@ public final class AppModel: ObservableObject {
         guard !isDemoMode, let value = target?.ecid?.uppercased() else { return false }
         return value == "TEST" || value.hasPrefix("DEMO") || value.hasPrefix("TEST-")
     }
-    public var canRestore: Bool { !isDemoMode && target?.state == .dfu && imageURL != nil && selectedImageMatchesTarget && restoreState == .idle }
+    public var canRestore: Bool { !isDemoMode && target?.state == .dfu && imageURL != nil && selectedImageMatchesTarget && !operationInProgress }
     public var canRevive: Bool {
-        guard !isDemoMode, let target, restoreState == .idle else { return false }
+        guard !isDemoMode, let target, !operationInProgress else { return false }
         return target.family == .mac ? (target.state == .dfu || target.state == .recovery) : target.state == .recovery
     }
     private var selectedImageMatchesTarget: Bool {
@@ -328,6 +337,11 @@ public final class AppModel: ObservableObject {
 
     public func refreshDiagnosticsAndTarget() async {
         guard !isDemoMode else { return }
+        if case .reconnecting(let operation) = restoreState {
+            operationGeneration &+= 1
+            operationTask?.cancel(); operationTask = nil
+            restoreState = .completed("\(operation) completed successfully. Target restart could not be verified.")
+        }
         let previousContext = target.map(TargetContext.init)
         if privilegeMode == .signedHelper { privilegedHelperState = await Task.detached { PrivilegedDFUClient().state() }.value }
         do {
@@ -605,30 +619,46 @@ public final class AppModel: ObservableObject {
         runRestore(targetDevices.count > 1 && target.ecid != nil ? .targetedRevive(ecid: target.ecid!) : .revive)
     }
     private func runRestore(_ action: RestoreAction) {
-        Task {
-            let operationTarget = target
-            let log = try? operationLogger.start(operation: action.operationName, target: target, release: selectedRelease)
-            lastLogURL = log
+        guard !operationInProgress else { return }
+        operationGeneration &+= 1
+        let generation = operationGeneration
+        let operationTarget = target
+        let log = try? operationLogger.start(operation: action.operationName, target: target, release: selectedRelease)
+        lastLogURL = log
+        restoreState = .running(operation: action.operationName, stage: "Preparing", stageIndex: nil, stageTotal: nil, fraction: nil)
+        operationTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 for try await event in restoreEngine.events(for: action) {
+                    guard generation == operationGeneration, !Task.isCancelled else { return }
                     if let log { try? operationLogger.append(String(describing: event), to: log) }
                     restoreState = OperationProgressReducer.reduce(restoreState, event: event, operation: action.operationName)
                     if case .completed = event {
-                        await verifyReconnect(operation: action.operationName, originalTarget: operationTarget)
+                        if let log { try? operationLogger.append("Reconnect verification started", to: log) }
+                        await verifyReconnect(operation: action.operationName, originalTarget: operationTarget, generation: generation, log: log)
                     }
                 }
-            } catch { if let log { try? operationLogger.append("FAILED: \(error.localizedDescription)", to: log) }; restoreState = .failed(error.localizedDescription); presentedError = "\(action.operationName) failed.\n\(error.localizedDescription)" }
+            } catch {
+                guard generation == operationGeneration, !Task.isCancelled else { return }
+                if let log { try? operationLogger.append("FAILED: \(error.localizedDescription)\nOperation context cleared", to: log) }
+                restoreState = .failed(error.localizedDescription); presentedError = "\(action.operationName) failed.\n\(error.localizedDescription)"
+            }
+            if generation == operationGeneration { operationTask = nil }
         }
     }
 
-    private func verifyReconnect(operation: String, originalTarget: DFUDevice?) async {
-        switch await ReconnectVerifier(discovery: discovery).wait(expectedECID: originalTarget?.ecid) {
+    private func verifyReconnect(operation: String, originalTarget: DFUDevice?, generation: UInt64, log: URL?) async {
+        let result = await ReconnectVerifier(discovery: discovery).wait(expectedECID: originalTarget?.ecid, attempts: reconnectAttempts, interval: reconnectInterval)
+        guard generation == operationGeneration, !Task.isCancelled else { return }
+        switch result {
         case .restarted(let device):
             targetDevices = [Self.mergingRediscovered(device, with: originalTarget)]
             selectedTargetECID = device.ecid
             restoreState = .completed("\(operation) completed successfully. Target restarted.")
+            if let log { try? operationLogger.append("Reconnect verified\nOperation context cleared", to: log) }
         case .unverified:
             restoreState = .completed("\(operation) completed successfully. Target restart could not be verified.")
+            if let log { try? operationLogger.append("Reconnect verification timed out\nOperation context cleared", to: log) }
         }
     }
 
