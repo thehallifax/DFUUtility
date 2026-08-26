@@ -4,7 +4,7 @@ DFUUtility is an open-source native macOS utility for entering supported Macs in
 
 ![DFUUtility with a connected Mac](docs/images/normal-mac.png)
 
-Version 0.6.0 adds focused iPhone and iPad support, guided physical-button DFU assistance, and managed iOS/iPadOS firmware downloads. Community builds are local and ad-hoc signed; no paid Apple Developer account is required.
+Version 0.6.1 is a focused patch release improving post-operation state recovery, Mac Enter DFU error handling, and Community installation. Community builds are local and ad-hoc signed; no paid Apple Developer account is required.
 
 ## Features
 
@@ -63,10 +63,17 @@ scripts/install-local.sh
 
 Open `/Applications/DFUUtility.app`. To uninstall the local build, run `scripts/uninstall-local.sh`.
 
-The normal installer builds, packages, verifies, and installs the app without running the repository test suite, so it works with supported Command Line Tools installations that do not include the Swift Testing module. Contributors with the full development toolchain can run tests before installation explicitly:
+The normal installer builds, packages, verifies, and installs the app with concise progress output. It does not run the repository test suite, so full Xcode is not required merely to install DFUUtility when the selected Command Line Tools can compile the release app. Contributors with a newer Swift/Xcode toolchain that includes Swift Testing can validate before installation explicitly:
 
 ```sh
 scripts/install-local.sh --test
+```
+
+For complete build, packaging, and verification output, use verbose mode. The flags can be combined in either order:
+
+```sh
+scripts/install-local.sh --verbose
+scripts/install-local.sh --test --verbose
 ```
 
 ## Usage
@@ -129,7 +136,7 @@ Apple Configurator's `cfgutil` remains required for device discovery, Restore, a
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.6.0 release notes](docs/RELEASE_NOTES_0.6.0.md) for release details.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.6.1 release notes](docs/RELEASE_NOTES_0.6.1.md) for this patch and the [0.6.0 release notes](docs/RELEASE_NOTES_0.6.0.md) for the underlying feature release.
 
 ## License
 

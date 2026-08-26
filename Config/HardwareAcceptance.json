@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "acceptanceDate": "2026-08-22",
-  "appVersion": "0.6.0",
+  "appVersion": "0.6.1",
   "distributionMode": "Community",
   "hardware": {
     "displayName": "MacBook Air M2",

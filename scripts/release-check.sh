@@ -124,7 +124,7 @@ screenshots_ok=true
 for screenshot in normal-mac mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
   [ -s "$root/docs/images/$screenshot.png" ] || screenshots_ok=false
 done
-if [ "$screenshots_ok" = true ]; then pass "Release screenshots" "9 deterministic assets"; else fail "Release screenshots" "one or more 0.6.0 screenshots are missing"; fi
+if [ "$screenshots_ok" = true ]; then pass "Release screenshots" "9 deterministic assets"; else fail "Release screenshots" "one or more release screenshots are missing"; fi
 
 artifact="$root/.build/distribution/$(distribution_artifact_name "$version")"
 if [ -f "$artifact" ] && unzip -Z1 "$artifact" >"$log_root/zip-contents.log" 2>&1 && grep -q '^DFUUtility.app/Contents/MacOS/DFUUtility$' "$log_root/zip-contents.log" && grep -q '^DFUUtility.app/Contents/Library/LaunchServices/DFUPrivilegedHelper$' "$log_root/zip-contents.log"; then

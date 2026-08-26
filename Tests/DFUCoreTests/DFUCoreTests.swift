@@ -547,10 +547,10 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
 }
 
 @Test func buildVersionAndDiagnosticsMetadataPropagate() throws {
-    #expect(BuildMetadata.displayVersion == "0.6.0 (1)")
+    #expect(BuildMetadata.displayVersion == "0.6.1 (1)")
     #expect(BuildMetadata.helperProtocolVersion == 1)
     let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .signedHelper, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
-    #expect(text.contains("App version: 0.6.0 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+    #expect(text.contains("App version: 0.6.1 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
     #expect(text.contains("Helper registration signing: Unsupported"))
 }
 
@@ -572,16 +572,27 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
 @Test func localInstallScriptValidatesArgumentsAndDestination() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let script = root.appendingPathComponent("scripts/install-local.sh")
-    let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = [script.path, "--unknown"]
-    process.standardOutput = Pipe(); process.standardError = Pipe(); try process.run(); process.waitUntilExit()
-    #expect(process.terminationStatus == 64)
+    func invoke(_ arguments: [String]) throws -> (Int32, String) {
+        let process = Process(), output = Pipe(); process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = [script.path] + arguments
+        process.standardOutput = output; process.standardError = output; try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+    let unknown = try invoke(["--unknown"])
+    #expect(unknown.0 == 64); #expect(unknown.1.contains("Usage:"))
+    let help = try invoke(["--test", "--verbose", "--help"])
+    #expect(help.0 == 0); #expect(help.1.contains("[--test] [--verbose]"))
     let text = try String(contentsOf: script, encoding: .utf8)
     #expect(text.contains("/Applications/DFUUtility.app"))
     #expect(text.contains("scripts/package-app.sh release"))
     #expect(text.contains("scripts/verify-app.sh"))
     #expect(text.contains("--test")); #expect(!text.contains("--skip-tests"))
-    #expect(text.contains("if [ \"$run_tests\" -eq 1 ]; then swift test; fi"))
-    #expect(text.contains("Community Mac Enter DFU operation")); #expect(text.contains("guided iPhone/iPad DFU"))
+    #expect(text.contains("--verbose")); #expect(text.contains("if [ \"$run_tests\" -eq 1 ]"))
+    #expect(text.contains("if [ \"$verbose\" -eq 1 ]")); #expect(text.contains("run_step \"Running tests\""))
+    #expect(text.contains("cat \"$log\"")); #expect(text.contains("FAILED")); #expect(text.contains("--- end $name output ---"))
+    #expect(text.contains("Full test mode requires a newer Swift/Xcode toolchain")); #expect(text.contains("installed without --test"))
+    #expect(text.contains("Mac DFU entry may request administrator authorization")); #expect(text.contains("iPhone/iPad DFU uses guided physical-button instructions"))
+    #expect(text.contains("Previous app moved to Trash:")); #expect(text.contains("Open Applications → DFUUtility"))
 }
 
 private func releaseLibrary(_ command: String) throws -> (Int32, String) {
@@ -593,7 +604,7 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
 
 @Test func releaseCheckParsesVersionAndRejectsMalformedMetadata() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.6.0")
+    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.6.1")
     let malformed = try temporaryDirectory().appendingPathComponent("Version.env"); try Data("MARKETING_VERSION=bad!\n".utf8).write(to: malformed)
     #expect(try releaseLibrary("validate_version_metadata \"\(malformed.path)\"").0 != 0)
     #expect(try releaseLibrary("metadata_value /definitely/missing MARKETING_VERSION").0 != 0)
