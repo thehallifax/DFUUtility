@@ -219,6 +219,15 @@ private func mobileRestoreCommand(family: AppleDeviceFamily, state: DeviceState,
     #expect(pad.1.contains("PAD-ECID")); #expect(pad.1.contains("restore")); #expect(pad.1.contains("--ipsw"))
 }
 
+@Test func targetedReviveAndRestartCommandsRemainUnambiguous() throws {
+    let target = DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE", productType: "iPhone15,2")
+    let engine = RestoreEngine(discovery: FixedRestoreDiscovery(values: [target]), runner: SequenceCommandRunner([]), cfgutil: URL(fileURLWithPath: "/cfgutil"))
+    let revive = try engine.command(for: .targetedRevive(ecid: "PHONE"))
+    #expect(revive.1 == ["--progress", "--verbose", "--timeout", "30", "--ecid", "PHONE", "revive"])
+    let restart = try engine.command(for: .targetedReboot(ecid: "PHONE"))
+    #expect(restart.1 == ["--progress", "--verbose", "--timeout", "30", "--ecid", "PHONE", "restart"])
+}
+
 @Test func mobileRestoreStillRequiresProductCompatibilityAndSingleTarget() throws {
     #expect(throws: DFUError.self) { _ = try mobileRestoreCommand(family: .iPhone, state: .recovery, product: "iPhone15,2", manifestProducts: ["iPhone16,1"]) }
 

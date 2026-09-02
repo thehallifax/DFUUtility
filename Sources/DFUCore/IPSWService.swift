@@ -62,6 +62,11 @@ public protocol IPSWService: Sendable {
 public extension IPSWService {
     func availableImages(for device: DFUDevice) async throws -> [IPSWRelease] { try await availableImages(for: Optional(device)) }
     func recommendedImage(for device: DFUDevice) async throws -> IPSWRelease { try await recommendedImage(for: Optional(device)) }
+    func availableImages(for platform: RestorePlatform) async throws -> [IPSWRelease] {
+        let family: AppleDeviceFamily = switch platform { case .macOS: .mac; case .iOS: .iPhone; case .iPadOS: .iPad }
+        let browsingDevice = DFUDevice(family: family, state: .unknown)
+        return try await availableImages(for: browsingDevice).filter { $0.platform == platform }
+    }
     func download(_ release: IPSWRelease) async throws -> URL { try await download(release, progress: { _ in }) }
     func downloadEvents(_ release: IPSWRelease) -> AsyncThrowingStream<DownloadEvent, Error> {
         AsyncThrowingStream { continuation in

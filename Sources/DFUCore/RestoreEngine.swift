@@ -1,10 +1,10 @@
 import Foundation
 
 public enum RestoreAction: Sendable, Equatable {
-    case restore(URL), targetedRestore(URL, ecid: String), revive, targetedRevive(ecid: String), reboot
+    case restore(URL), targetedRestore(URL, ecid: String), revive, targetedRevive(ecid: String), reboot, targetedReboot(ecid: String)
 
     public var operationName: String {
-        switch self { case .restore, .targetedRestore: "Restore"; case .revive, .targetedRevive: "Revive"; case .reboot: "Restart" }
+        switch self { case .restore, .targetedRestore: "Restore"; case .revive, .targetedRevive: "Revive"; case .reboot, .targetedReboot: "Restart" }
     }
 }
 
@@ -166,7 +166,7 @@ public struct RestoreEngine: Sendable {
         if let restoreURL { try validateIPSW(restoreURL) }
         let devices = try discovery.devices()
         guard !devices.isEmpty else { throw DFUError.noTarget }
-        let requestedECID: String? = switch action { case .targetedRestore(_, let ecid), .targetedRevive(let ecid): ecid; default: nil }
+        let requestedECID: String? = switch action { case .targetedRestore(_, let ecid), .targetedRevive(let ecid), .targetedReboot(let ecid): ecid; default: nil }
         let candidates = requestedECID.map { wanted in devices.filter { $0.ecid == wanted } } ?? devices
         guard candidates.count == 1 else { throw DFUError.multipleTargets(devices.count) }
         let target = candidates[0]
@@ -182,11 +182,11 @@ public struct RestoreEngine: Sendable {
         case .revive, .targetedRevive:
             let valid = target.family == .mac ? (target.state == .dfu || target.state == .recovery) : target.state == .recovery
             guard valid else { throw DFUError.targetNotInDFU }
-        case .reboot: break
+        case .reboot, .targetedReboot: break
         }
         var arguments = ["--progress", "--verbose", "--timeout", "30"]
         if let ecid = target.ecid, !ecid.isEmpty { arguments += ["--ecid", ecid] }
-        switch action { case .restore(let url), .targetedRestore(let url, _): arguments += ["restore", "--ipsw", url.path]; case .revive, .targetedRevive: arguments += ["revive"]; case .reboot: arguments += ["restart"] }
+        switch action { case .restore(let url), .targetedRestore(let url, _): arguments += ["restore", "--ipsw", url.path]; case .revive, .targetedRevive: arguments += ["revive"]; case .reboot, .targetedReboot: arguments += ["restart"] }
         return (cfgutil, arguments, target)
     }
 

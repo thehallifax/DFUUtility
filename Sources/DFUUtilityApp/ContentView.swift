@@ -58,19 +58,14 @@ struct ContentView: View {
     private var targetCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                if model.targetDevices.isEmpty {
+                if model.deviceSessions.sessions.count > 1 {
+                    Text("Multiple targets detected").font(.headline)
+                    DeviceSessionListView(model: model, sessions: model.deviceSessions)
+                    Text("Choose a row for its detailed workflow. Checkboxes select an explicit batch; newly connected devices are never added automatically.").font(.caption).foregroundStyle(.secondary)
+                }
+                else if model.targetDevices.isEmpty {
                     Text("No target device connected").font(.headline)
                     Text("Connect a supported Apple device using a data-capable cable.").foregroundStyle(.secondary)
-                }
-                else if model.targetDevices.count > 1 {
-                    Text("Multiple targets detected").font(.headline)
-                    Picker("Selected target", selection: Binding(get: { model.selectedTargetECID ?? "" }, set: { model.selectTarget(ecid: $0) })) {
-                        Text("Choose a target…").tag("")
-                        ForEach(model.targetDevices.filter { $0.ecid != nil }, id: \.ecid) { device in
-                            Text("\(device.friendlyName ?? device.family.displayName) — \(device.state.rawValue) — \(device.restoreProductType ?? "Unknown product")").tag(device.ecid!)
-                        }
-                    }
-                    Text("A destructive action remains disabled until one ECID-addressable target is explicitly selected.").font(.caption).foregroundStyle(.secondary)
                 }
                 else if let target = model.target {
                     if let name = target.friendlyName { Text(name).font(.title2.bold()) }
@@ -108,6 +103,7 @@ struct ContentView: View {
                 case nil:
                     EmptyView()
                 }
+                if model.macDFUMultiTargetUnavailable { Text("Automatic Mac Enter DFU is available only when exactly one target is connected because macvdmtool cannot select a specific Mac.").font(.caption).foregroundStyle(.orange) }
                 if model.doctorReport?.status.host.macVDMToolPath == nil { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label("Target Device", systemImage: model.target?.family == .mac ? "desktopcomputer" : "iphone") }
@@ -130,6 +126,13 @@ struct ContentView: View {
     private var restoreCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
+                if model.isFirmwareLibraryMode {
+                    Picker("Platform", selection: Binding(get: { model.browsePlatform }, set: { platform in Task { await model.selectBrowsePlatform(platform) } })) {
+                        ForEach(RestorePlatform.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Browse, download, and validate firmware without connecting a target. Compatibility is checked again against any device selected later.").font(.caption).foregroundStyle(.secondary)
+                }
                 Text("Selected image").font(.caption).foregroundStyle(.secondary)
                 selectedImageSummary
                 if case .loading = model.catalogueState { ProgressView("Checking Apple…").controlSize(.small) }
@@ -141,15 +144,18 @@ struct ContentView: View {
                     Button("Choose Local IPSW…") { showImporter = true }
                     Button("Manage Downloads…") { showCacheManager = true }
                 }
-                OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.selectedRelease?.version, platform: model.targetRestorePlatform), target: model.target)
-                Button("Restore \(model.target?.family.displayName ?? "Device")", role: .destructive) { confirmRestore = true }.disabled(!model.canRestore)
-                Text("Restore erases the target device.").font(.caption.bold()).foregroundStyle(.secondary)
-                if model.canRevive { Text("Revive attempts repair without erasing recoverable user data, but is not a backup or guarantee.").font(.caption).foregroundStyle(.secondary) }
+                if model.deviceSessions.sessions.count > 1 { BatchRestoreControls(model: model, sessions: model.deviceSessions, coordinator: model.batchCoordinator) }
+                if !model.isFirmwareLibraryMode {
+                    OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.selectedRelease?.version, platform: model.targetRestorePlatform), target: model.target)
+                    Button("Restore \(model.target?.family.displayName ?? "Device")", role: .destructive) { confirmRestore = true }.disabled(!model.canRestore)
+                    Text("Restore erases the target device.").font(.caption.bold()).foregroundStyle(.secondary)
+                    if model.canRevive { Text("Revive attempts repair without erasing recoverable user data, but is not a backup or guarantee.").font(.caption).foregroundStyle(.secondary) }
+                }
                 HStack {
                     if let log = model.lastLogURL { Button("View Log") { NSWorkspace.shared.open(log) } }
                     Button("Reveal Logs in Finder") { NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DFUUtility")]) }
                 }
-                if !model.canRestore { Text(model.restoreUnavailableMessage).font(.caption).foregroundStyle(.secondary) }
+                if !model.isFirmwareLibraryMode && !model.canRestore { Text(model.restoreUnavailableMessage).font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label(model.restoreSectionTitle, systemImage: "arrow.down.circle") }
     }
@@ -254,11 +260,108 @@ struct VersionPicker: View {
 
     @ViewBuilder private func cacheLabel(_ state: IPSWChoiceCacheState) -> some View {
         switch state {
-        case .downloaded: Label("Downloaded", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .downloaded: Label("Downloaded and validated", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
         case .partial(let bytes): Label("Partial · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))", systemImage: "arrow.clockwise").foregroundStyle(.orange)
         case .downloadRequired: Text("Download required")
         case .invalid: Label("Invalid cached image", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
         case .validating: ProgressView().controlSize(.mini)
+        }
+    }
+}
+
+private struct DeviceSessionListView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var sessions: DeviceSessionManager
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(sessions.sessions) { session in
+                HStack(spacing: 10) {
+                    Toggle("", isOn: Binding(get: { session.isSelected }, set: { model.setSessionSelected(session.id, selected: $0) }))
+                        .labelsHidden().toggleStyle(.checkbox).disabled(!session.hasSafeBatchIdentity)
+                    Image(systemName: icon(for: session.device.family)).frame(width: 20)
+                    Button { model.selectSessionForDetail(session.id) } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.device.friendlyName ?? session.device.family.displayName).font(.headline)
+                            Text("\(session.device.restoreProductType ?? "Unknown product") · \(session.device.state.rawValue) · \(session.shortIdentity)").font(.caption).foregroundStyle(.secondary)
+                            Text(status(session)).font(.caption).foregroundStyle(session.canRestore ? .green : .secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.buttonStyle(.plain)
+                    if case .running(_, let fraction) = session.operationState {
+                        if let fraction { ProgressView(value: fraction).frame(width: 90) } else { ProgressView().controlSize(.small) }
+                    }
+                    if let log = session.operationLogURL { Button("Log") { NSWorkspace.shared.open(log) }.controlSize(.small) }
+                }
+                .padding(8).background(model.selectedTargetECID?.caseInsensitiveCompare(session.ecid ?? "") == .orderedSame ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            }
+            HStack {
+                Button("Select All Ready") { model.selectAllRestoreEligibleSessions() }
+                Button("Clear Selection") { model.clearSessionSelection() }
+                Spacer()
+                Text("\(sessions.selectedSessions.count) selected").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+    private func icon(for family: AppleDeviceFamily) -> String { family == .mac ? "desktopcomputer" : family == .iPad ? "ipad" : "iphone" }
+    private func status(_ session: DeviceSession) -> String {
+        switch session.operationState {
+        case .idle: return session.canRestore ? "Ready to restore" : (session.restoreEligibilityFailure ?? "Not ready")
+        case .queued(let position, let total): return "Queued — device \(position) of \(total)"
+        case .running(let stage, let fraction): return fraction.map { "\(stage) — \(Int($0 * 100))%" } ?? stage
+        case .reconnecting: return "Waiting for restart…"
+        case .completed(let result): return "✓ \(result)"
+        case .failed(let result): return "✗ \(result)"
+        case .cancelled: return "Not started — batch stopped"
+        }
+    }
+}
+
+private struct BatchRestoreControls: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var sessions: DeviceSessionManager
+    @ObservedObject var coordinator: BatchCoordinator
+    @State private var confirming = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text("Sequential Batch").font(.headline)
+            HStack {
+                Button("Use Latest Compatible Firmware") { Task { await model.useLatestCompatibleFirmwareForSelectedSessions() } }
+                Button("Use Current Firmware for Selected") { model.applyCurrentFirmwareToSelectedSessions() }
+                Button("Restore \(sessions.selectedSessions.count) Devices", role: .destructive) { confirming = true }
+                    .disabled(!coordinator.canStartRestore || model.isDemoMode)
+                Button("Revive Selected") { model.startBatch(.revive) }.disabled(!coordinator.canStart(.revive) || model.isDemoMode)
+                Button("Restart Selected") { model.startBatch(.restart) }.disabled(!coordinator.canStart(.restart) || model.isDemoMode)
+                if coordinator.isRunning { Button("Stop After Current Device") { model.stopBatchAfterCurrentTarget() } }
+            }
+            if !coordinator.selectedEligibilityFailures(for: .restore).isEmpty {
+                Text("Every selected device must be ready. \(coordinator.selectedEligibilityFailures(for: .restore).count) selected device(s) are blocked for Restore.").font(.caption).foregroundStyle(.orange)
+            }
+            if coordinator.isRunning, let index = coordinator.currentIndex {
+                Text("Device \(index + 1) of \(coordinator.frozenTargetIDs.count)")
+                ProgressView(value: coordinator.overallFraction)
+                Text("Overall indicator combines completed-device count with current stage-local progress; it is not byte-linear.").font(.caption).foregroundStyle(.secondary)
+            }
+            if let summary = coordinator.summary {
+                Text("Batch complete — Succeeded: \(summary.succeeded), Failed: \(summary.failed), Not started: \(summary.cancelled)").font(.headline)
+            }
+        }
+        .sheet(isPresented: $confirming) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Restore \(sessions.selectedSessions.count) devices?").font(.title2.bold())
+                Text("This will erase the following targets. Operations run sequentially and remain individually ECID-targeted.").foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(sessions.selectedSessions) { session in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\(session.device.friendlyName ?? session.device.family.displayName) (\(session.device.restoreProductType ?? "Unknown")) — \(session.shortIdentity)").font(.headline)
+                                Text("Firmware: \(session.selectedRelease.map { "\($0.platform.displayName) \($0.version) (\($0.build))" } ?? session.selectedImageURL?.lastPathComponent ?? "Not selected")").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Divider()
+                        }
+                    }
+                }
+                HStack { Spacer(); Button("Cancel") { confirming = false }; Button("Restore Sequentially", role: .destructive) { confirming = false; model.startBatchRestore() }.keyboardShortcut(.defaultAction) }
+            }.padding().frame(minWidth: 560, minHeight: 380)
         }
     }
 }

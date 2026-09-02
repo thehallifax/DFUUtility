@@ -10,7 +10,7 @@ public enum IPSWChoiceCacheState: Equatable, Sendable {
 
     public var label: String {
         switch self {
-        case .downloaded: "Downloaded"
+        case .downloaded: "Downloaded and validated"
         case .partial: "Partial download"
         case .downloadRequired: "Download required"
         case .invalid: "Invalid cached image"
@@ -34,11 +34,23 @@ public enum IPSWCompatibility: Equatable, Sendable {
 }
 
 public struct IPSWChoice: Identifiable, Equatable, Sendable {
-    public var id: String { release.build }
+    public var id: FirmwareReleaseKey { FirmwareReleaseKey(release) }
     public let release: IPSWRelease
     public let isRecommended: Bool
     public let cacheState: IPSWChoiceCacheState
     public let compatibility: IPSWCompatibility
+}
+
+public struct FirmwareReleaseKey: Hashable, Sendable {
+    public let platform: RestorePlatform
+    public let version: String
+    public let build: String
+
+    public init(_ release: IPSWRelease) {
+        platform = release.platform
+        version = release.version
+        build = release.build
+    }
 }
 
 public enum SelectedImagePresentation: Equatable, Sendable {

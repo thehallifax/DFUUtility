@@ -35,6 +35,16 @@ Version 0.6.1 is a focused patch release improving post-operation state recovery
 - Separate native destructive confirmation; Restore never begins from DFU detection alone.
 - Demo and screenshot modes cannot invoke hardware operations.
 
+### Multiple devices
+
+- Multiple connected devices are represented as independent sessions keyed by ECID where available, with UDID/serial used only to preserve non-destructive presentation state when ECID is unavailable.
+- A device without ECID, UDID, or serial receives a new ephemeral session on rediscovery so another physical device cannot inherit its firmware or operation state; it remains unavailable for batch execution until an ECID is present.
+- Batch Restore, Revive, and Restart freeze an explicit checkbox selection and run sequentially; every cfgutil command remains targeted to one ECID.
+- Firmware selection, validation, progress, reconnect verification, results, and logs remain per device. A failure is recorded and the next queued device continues; **Stop After Current Device** prevents new operations from starting without interrupting the active restore.
+- Automatic Mac Enter DFU remains single-target because upstream `macvdmtool dfu` does not provide an unambiguous target selector.
+
+Batch execution is intentionally sequential in this first implementation. Parallel destructive operations are not supported.
+
 ## Screenshots
 
 | Guided iPhone DFU | Guided iPad DFU |

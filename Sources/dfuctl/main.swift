@@ -112,9 +112,18 @@ struct DFUCLI {
     }
 
     static func printStatus(_ status: UtilityStatus) {
-        print("Host:\n  Apple Silicon: \(status.host.isAppleSilicon ? "Yes" : "No")\n  macOS: \(status.host.macOSVersion)\n  macvdmtool: \(status.host.macVDMToolPath == nil ? "Unavailable" : "Available")\n  cfgutil: \(status.host.cfgutilPath == nil ? "Unavailable" : "Available")\nTarget:\n  Connected: \(status.targets.isEmpty ? "No" : "Yes")")
-        if status.targets.isEmpty { print("  State: Unknown") }
-        for device in status.targets { print("  Family: \(device.family.displayName)\n  State: \(device.state.rawValue)"); if let product = device.restoreProductType { print("  Product: \(product)") }; if let id = device.identifier { print("  Identifier: \(id)") }; if let serial = device.serialNumber { print("  Serial: \(serial)") }; if let ecid = device.ecid { print("  ECID: \(ecid)") } }
+        print("Host:\n  Apple Silicon: \(status.host.isAppleSilicon ? "Yes" : "No")\n  macOS: \(status.host.macOSVersion)\n  macvdmtool: \(status.host.macVDMToolPath == nil ? "Unavailable" : "Available")\n  cfgutil: \(status.host.cfgutilPath == nil ? "Unavailable" : "Available")")
+        if status.targets.isEmpty { print("Target:\n  Connected: No\n  State: Unknown"); return }
+        if status.targets.count == 1 { print("Target:\n  Connected: Yes"); printStatusDevice(status.targets[0], indent: "  "); return }
+        print("Targets:\n  Connected: Yes\n  Count: \(status.targets.count)")
+        for (index, device) in status.targets.enumerated() { print("\n  [\(index + 1)]"); printStatusDevice(device, indent: "    ") }
+    }
+    static func printStatusDevice(_ device: DFUDevice, indent: String) {
+        print("\(indent)Family: \(device.family.displayName)\n\(indent)State: \(device.state.rawValue)")
+        if let product = device.restoreProductType { print("\(indent)Product: \(product)") }
+        if let id = device.identifier { print("\(indent)Identifier: \(id)") }
+        if let serial = device.serialNumber { print("\(indent)Serial: \(serial)") }
+        if let ecid = device.ecid { print("\(indent)ECID: \(ecid)") }
     }
     static func printTarget(_ devices: [DFUDevice]) {
         print("  Connected: \(devices.isEmpty ? "No" : "Yes")")
