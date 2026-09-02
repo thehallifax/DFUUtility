@@ -59,6 +59,12 @@ if [ "$version" != unknown ] && grep -Fq "public static let version = \"$version
 else fail "Generated metadata" "generated Swift metadata disagrees with Config/Version.env"
 fi
 
+if [ -x scripts/update.sh ] && sh -n scripts/update.sh && grep -Fq "scripts/update.sh" README.md; then
+  pass "Updater" "executable, syntax valid, documented"
+else
+  fail "Updater" "scripts/update.sh must be executable, syntax valid, and documented in README"
+fi
+
 run_stage debug-build "Debug build" swift build || true
 if run_stage tests "Tests" swift test; then
   test_count=$(sed -n 's/.*Test run with \([0-9][0-9]*\) tests.*/\1/p' "$log_root/tests.log" | tail -1)

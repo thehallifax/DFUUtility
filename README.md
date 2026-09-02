@@ -90,6 +90,25 @@ scripts/install-local.sh --verbose
 scripts/install-local.sh --test --verbose
 ```
 
+### Updating
+
+If DFUUtility was installed from a normal Git clone, update it from that source folder:
+
+```sh
+cd /path/to/DFUUtility
+scripts/update.sh
+```
+
+The updater checks GitHub for newer source, refuses to overwrite local changes, and fast-forwards the `main` branch without creating a merge commit. When an update is available, it reuses the existing installer to build, verify, and replace `/Applications/DFUUtility.app`; the installer moves the previous application to Trash.
+
+```sh
+scripts/update.sh --check    # Check without pulling, building, or installing
+scripts/update.sh --verbose  # Show complete installer output
+scripts/update.sh --test     # Run the repository tests before installation
+```
+
+The flags may be combined. Automatic updates are intended for clean end-user clones. Contributors with local changes or feature branches should manage their Git checkout manually; the updater never stashes, resets, cleans, switches branches, or discards work.
+
 ## Usage
 
 1. Connect the target with a data-capable cable and select it if more than one device is attached.

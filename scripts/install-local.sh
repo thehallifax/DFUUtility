@@ -106,3 +106,9 @@ echo
 echo "Mac DFU entry may request administrator authorization."
 echo "iPhone/iPad DFU uses guided physical-button instructions."
 echo "Open Applications → DFUUtility."
+quoted_root=$(printf '%s' "$root" | sed "s/'/'\\\\''/g")
+echo
+echo "To update DFUUtility later:"
+echo
+printf "  cd '%s'\n" "$quoted_root"
+echo "  scripts/update.sh"

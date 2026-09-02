@@ -662,6 +662,22 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     #expect(text.contains("Full test mode requires a newer Swift/Xcode toolchain")); #expect(text.contains("installed without --test"))
     #expect(text.contains("Mac DFU entry may request administrator authorization")); #expect(text.contains("iPhone/iPad DFU uses guided physical-button instructions"))
     #expect(text.contains("Previous app moved to Trash:")); #expect(text.contains("Open Applications → DFUUtility"))
+    #expect(text.contains("To update DFUUtility later:")); #expect(text.contains("scripts/update.sh"))
+}
+
+@Test func updaterShellSafetyMatrix() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let script = root.appendingPathComponent("scripts/test-update.sh")
+    let process = Process(), output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = [script.path]
+    process.standardOutput = output; process.standardError = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    let text = String(decoding: data, as: UTF8.self)
+    #expect(process.terminationStatus == 0)
+    #expect(text.contains("Updater shell tests passed."))
 }
 
 private func releaseLibrary(_ command: String) throws -> (Int32, String) {
