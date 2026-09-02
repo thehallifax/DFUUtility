@@ -217,6 +217,19 @@ public final class UpdateCoordinator: ObservableObject {
 
     public func clearResult() { pendingResult = nil }
 
+    public var shareableSourceHealth: String {
+        do {
+            _ = try recordedSource()
+            return "Recorded source available"
+        } catch UpdateServiceError.sourceNotRecorded {
+            return "Source not recorded"
+        } catch UpdateServiceError.sourceMissing {
+            return "Recorded source unavailable"
+        } catch {
+            return "Source status unavailable"
+        }
+    }
+
     private func recordedSource() throws -> URL {
         guard let value = try? String(contentsOf: sourceRecordURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { throw UpdateServiceError.sourceNotRecorded }
         let url = URL(fileURLWithPath: value, isDirectory: true)

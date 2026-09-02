@@ -4,6 +4,7 @@ import SwiftUI
 
 struct DiagnosticsView: View {
     let report: DoctorReport?
+    let shareableText: String
     var privilegeMode: PrivilegeMode = PrivilegeModeSelector.select()
     var helperState: PrivilegedHelperState = PrivilegedDFUClient().state()
     var registrationErrorDetails: String?
@@ -12,10 +13,11 @@ struct DiagnosticsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Diagnostics").font(.title.bold())
+            Text("Detailed local diagnostics are shown below. Copy and Save create a sanitized report suitable for sharing.").font(.caption).foregroundStyle(.secondary)
             ScrollView { Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
             HStack {
-                Button("Copy Diagnostics") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
-                Button("Save Diagnostics…") { save() }
+                Button("Copy Sanitized Diagnostics") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(shareableText, forType: .string) }
+                Button("Save Sanitized Diagnostics…") { save() }
                 Spacer()
             }
         }
@@ -24,6 +26,6 @@ struct DiagnosticsView: View {
     private func save() {
         let panel = NSSavePanel(); panel.nameFieldStringValue = "DFUUtility-Diagnostics.txt"; panel.allowedContentTypes = [.plainText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? text.write(to: url, atomically: true, encoding: .utf8)
+        try? shareableText.write(to: url, atomically: true, encoding: .utf8)
     }
 }

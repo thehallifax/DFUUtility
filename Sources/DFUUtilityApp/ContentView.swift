@@ -44,7 +44,7 @@ struct ContentView: View {
         .padding(24)
         .task { await model.load() }
         .sheet(isPresented: $showVersions) { VersionPicker(model: model, isPresented: $showVersions) }
-        .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails).frame(minWidth: 480, minHeight: 430).padding() }
+        .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, shareableText: model.shareableDiagnosticsText, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails).frame(minWidth: 520, minHeight: 460).padding() }
         .sheet(isPresented: $showAbout) { AboutView().frame(minWidth: 520, minHeight: 420).padding() }
         .sheet(isPresented: $showCacheManager) { CacheManagerView(model: model, isPresented: $showCacheManager) }
         .sheet(isPresented: $model.isUpdatePresentationRequested) { UpdateView(model: model) }
@@ -91,6 +91,17 @@ struct ContentView: View {
                 else if model.targetDevices.isEmpty {
                     Text("No target device connected").font(.headline)
                     Text("Connect a supported Apple device using a data-capable cable.").foregroundStyle(.secondary)
+                }
+                if model.cfgutilSetupRequired {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label("Apple Configurator tooling is required", systemImage: "wrench.and.screwdriver")
+                            .font(.headline)
+                        Text("Install Apple Configurator from the Mac App Store to enable device discovery, Restore, and Revive. Then return to DFUUtility and click Refresh.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Open Apple Configurator in the App Store") {
+                            NSWorkspace.shared.open(URL(string: "https://apps.apple.com/app/apple-configurator/id1037126344")!)
+                        }
+                    }.padding(10).background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                 }
                 else if let target = model.target {
                     if let name = target.friendlyName { Text(name).font(.title2.bold()) }

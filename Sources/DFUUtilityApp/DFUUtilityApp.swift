@@ -120,6 +120,6 @@ struct DFUUtilityApplication: App {
                         .disabled(model.isDemoMode || model.isScreenshotPresentation)
                 }
             }
-        Settings { DiagnosticsView(report: model.doctorReport, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails) }
+        Settings { DiagnosticsView(report: model.doctorReport, shareableText: model.shareableDiagnosticsText, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails) }
     }
 }

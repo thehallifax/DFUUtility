@@ -150,16 +150,23 @@ run_update
 [ "$status" -ne 0 ] || fail "$case_name: unexpected origin succeeded"; expect_head "$initial_head"; expect_no_file "$install_log"; expect_output "does not point to the expected repository"
 
 case_name=detached-launcher
-case_root="$suite/$case_name"; source_root="$case_root/source with spaces"; bin="$case_root/bin"; output="$case_root/output.log"
-mkdir -p "$source_root/scripts" "$source_root/Config" "$bin"
+case_root="$suite/$case_name"; source_root="$case_root/source with spaces"; bin="$case_root/bin"; output="$case_root/output.log"; test_home="$case_root/home with spaces"
+mkdir -p "$source_root/scripts" "$source_root/Config" "$bin" "$test_home/Library/Logs/DFUUtility"
 printf '%s\n' 'MARKETING_VERSION=0.6.1' > "$source_root/Config/Version.env"
 printf '%s\n' '#!/bin/sh' 'echo delegated > "$DFUUTILITY_LAUNCH_TEST"' 'exit 0' > "$source_root/scripts/update.sh"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$bin/open"
 printf '%s\n' '#!/bin/sh' 'echo synthetic-commit' > "$bin/git"
 chmod +x "$source_root/scripts/update.sh" "$bin/open" "$bin/git"
 result="$case_root/result"; delegated="$case_root/delegated"
-status=0; PATH="$bin:$PATH" DFUUTILITY_LAUNCH_TEST="$delegated" "$root/scripts/update-and-relaunch.sh" "$source_root" 999999 "/Applications/DFUUtility.app" "$result" >"$output" 2>&1 || status=$?
+update_log="$test_home/Library/Logs/DFUUtility/update.log"
+printf '%040d\n' 0 > "$update_log"
+chmod 755 "$test_home/Library/Logs/DFUUtility"; chmod 644 "$update_log"
+status=0; HOME="$test_home" PATH="$bin:$PATH" DFUUTILITY_UPDATE_LOG_MAX_BYTES=16 DFUUTILITY_LAUNCH_TEST="$delegated" "$root/scripts/update-and-relaunch.sh" "$source_root" 999999 "/Applications/DFUUtility.app" "$result" >"$output" 2>&1 || status=$?
 expect_status 0; expect_file "$delegated"; expect_file "$result"; grep -Fq 'status=success' "$result" || fail "$case_name: success result missing"
+[ "$(stat -f '%Lp' "$test_home/Library/Logs/DFUUtility")" = 700 ] || fail "$case_name: updater log directory is not mode 0700"
+[ "$(stat -f '%Lp' "$update_log")" = 600 ] || fail "$case_name: updater log is not mode 0600"
+expect_file "$update_log.1"; [ "$(stat -f '%Lp' "$update_log.1")" = 600 ] || fail "$case_name: rotated updater log is not mode 0600"
+grep -Fq '=== REAL DFUUtility updater run' "$update_log" || fail "$case_name: real updater delimiter missing"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures updater test(s) failed." >&2

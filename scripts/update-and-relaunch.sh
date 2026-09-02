@@ -1,5 +1,6 @@
 #!/bin/sh
 set -u
+umask 077
 
 if [ "$#" -ne 4 ]; then
   echo "Usage: update-and-relaunch.sh SOURCE_ROOT OLD_PID APP_PATH RESULT_FILE" >&2
@@ -12,8 +13,18 @@ result_file=$4
 log_dir="$HOME/Library/Logs/DFUUtility"
 log="$log_dir/update.log"
 mkdir -p "$log_dir" "$(dirname "$result_file")"
+chmod 700 "$log_dir"
+max_log_bytes=${DFUUTILITY_UPDATE_LOG_MAX_BYTES:-1048576}
+case "$max_log_bytes" in *[!0-9]*|'') max_log_bytes=1048576 ;; esac
+if [ -f "$log" ] && [ "$(wc -c < "$log" | tr -d ' ')" -gt "$max_log_bytes" ]; then
+  rm -f "$log.1"
+  mv "$log" "$log.1"
+  chmod 600 "$log.1"
+fi
+: >> "$log"
+chmod 600 "$log"
 exec >>"$log" 2>&1
-printf '\n[%s] In-app update started\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '\n=== REAL DFUUtility updater run — %s ===\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 while kill -0 "$old_pid" 2>/dev/null; do sleep 1; done
 old_version=$(sed -n 's/^MARKETING_VERSION=//p' "$source_root/Config/Version.env" | head -1)

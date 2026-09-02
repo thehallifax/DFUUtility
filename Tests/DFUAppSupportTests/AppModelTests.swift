@@ -86,7 +86,7 @@ private struct AppMockDiscovery: DeviceDiscovering { let values: [DFUDevice]; fu
 private struct AppMockValidator: IPSWValidating { let valid: Bool; func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { if !valid { throw DFUError.invalidIPSW("mock invalid") } } }
 private struct AppMockDiagnostics: DiagnosticsProviding {
     let reportValue: DoctorReport
-    init(macVDM: Bool = true) { reportValue = DoctorReport(status: UtilityStatus(host: HostStatus(isAppleSilicon: true, macOSVersion: "26.6.1", macVDMToolPath: macVDM ? URL(fileURLWithPath: "/macvdmtool") : nil, cfgutilPath: URL(fileURLWithPath: "/cfgutil")), targets: []), configuratorPresent: true, cacheDirectory: URL(fileURLWithPath: "/cache"), cacheWritable: true, restoreSupported: true) }
+    init(macVDM: Bool = true, cfgutil: Bool = true) { reportValue = DoctorReport(status: UtilityStatus(host: HostStatus(isAppleSilicon: true, macOSVersion: "26.6.1", macVDMToolPath: macVDM ? URL(fileURLWithPath: "/macvdmtool") : nil, cfgutilPath: cfgutil ? URL(fileURLWithPath: "/cfgutil") : nil, macVDMToolSource: macVDM ? .bundled : nil), targets: []), configuratorPresent: cfgutil, cacheDirectory: URL(fileURLWithPath: "/Users/fixture/Library/Caches/DFUUtility"), cacheWritable: true, restoreSupported: cfgutil) }
     func report() throws -> DoctorReport { reportValue }
 }
 private final class CapturingTargetDiagnostics: @unchecked Sendable, DiagnosticsProviding {
@@ -157,6 +157,49 @@ private let noOpLogger = AppMockLogger()
 @Test @MainActor func catalogueLoadsAndSelectsLatest() async {
     let app = model(service: AppMockService(releases: [makeRelease("15.7", "24A"), makeRelease("26.6.2", "25G83")]))
     await app.load(); #expect(app.catalogueState == .loaded); #expect(app.selectedRelease?.build == "25G83"); #expect(app.availableReleases.count == 2)
+}
+
+@Test @MainActor func firmwareCompatibilityPresentationIsPlatformConservative() async {
+    let mac = IPSWRelease(platform: .macOS, version: "1", build: "MAC", downloadURL: URL(string: "https://updates.cdn-apple.com/mac.ipsw")!, supportedDevices: [])
+    let unknownPhone = IPSWRelease(platform: .iOS, version: "1", build: "PHONE-UNKNOWN", downloadURL: URL(string: "https://updates.cdn-apple.com/phone-unknown.ipsw")!, supportedDevices: [])
+    let knownPhone = IPSWRelease(platform: .iOS, version: "1", build: "PHONE", downloadURL: URL(string: "https://updates.cdn-apple.com/phone.ipsw")!, supportedDevices: ["iPhone15,2"])
+    let unknownPad = IPSWRelease(platform: .iPadOS, version: "1", build: "PAD-UNKNOWN", downloadURL: URL(string: "https://updates.cdn-apple.com/pad-unknown.ipsw")!, supportedDevices: [])
+    let knownPad = IPSWRelease(platform: .iPadOS, version: "1", build: "PAD", downloadURL: URL(string: "https://updates.cdn-apple.com/pad.ipsw")!, supportedDevices: ["iPad13,18"])
+    let app = model(service: AppMockService(releases: [mac, unknownPhone, knownPhone, unknownPad, knownPad]))
+    await app.load()
+    #expect(app.choice(for: mac)?.compatibility == .universalAppleSilicon)
+    await app.selectBrowsePlatform(.iOS)
+    #expect(app.choice(for: unknownPhone)?.compatibility == .uncertain)
+    #expect(app.choice(for: knownPhone)?.compatibility == .uncertain)
+    await app.selectBrowsePlatform(.iPadOS)
+    #expect(app.choice(for: unknownPad)?.compatibility == .uncertain)
+    #expect(app.choice(for: knownPad)?.compatibility == .uncertain)
+
+    let phoneApp = model(service: AppMockService(releases: [knownPhone]), devices: [DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE", productType: "iPhone15,2")])
+    await phoneApp.load()
+    #expect(phoneApp.choice(for: knownPhone)?.compatibility == .compatible(model: "iPhone15,2"))
+    let padApp = model(service: AppMockService(releases: [knownPad]), devices: [DFUDevice(family: .iPad, state: .recovery, ecid: "PAD", productType: "iPad13,18")])
+    await padApp.load()
+    #expect(padApp.choice(for: knownPad)?.compatibility == .compatible(model: "iPad13,18"))
+}
+
+@Test @MainActor func sanitizedDiagnosticsRetainSupportFactsWithoutIdentifiersOrPaths() async {
+    let target = DFUDevice(family: .iPhone, state: .recovery, model: "iPhone 14 Pro", identifier: "SENSITIVE-UDID", ecid: "0xSENSITIVE-ECID", productType: "iPhone15,2", serialNumber: "SENSITIVE-SERIAL")
+    let host = HostStatus(isAppleSilicon: true, macOSVersion: "26.6", macVDMToolPath: URL(fileURLWithPath: "/Users/private/bin/macvdmtool"), cfgutilPath: URL(fileURLWithPath: "/Users/private/bin/cfgutil"), macVDMToolSource: .bundled)
+    let report = DoctorReport(status: UtilityStatus(host: host, targets: [target]), configuratorPresent: true, cacheDirectory: URL(fileURLWithPath: "/Users/private/Library/Caches/DFUUtility"), cacheWritable: true, restoreSupported: true)
+    let text = ShareableDiagnostics.render(report: report, privilegeMode: .community, cacheEntries: [], updateState: .current, updateSourceHealth: "Recorded source available", operationState: .completed("Sensitive operation output"), operationLogAvailable: true)
+    for secret in ["0xSENSITIVE-ECID", "SENSITIVE-SERIAL", "SENSITIVE-UDID", "private", "/Users/"] { #expect(!text.contains(secret)) }
+    #expect(text.contains("Privilege mode: Community")); #expect(text.contains("cfgutil: Available")); #expect(text.contains("macvdmtool: Available (Bundled)"))
+    #expect(text.contains("family iPhone, state Recovery, product iPhone15,2, stable identity Yes"))
+    #expect(text.contains("Firmware cache: 0 item(s)")); #expect(text.contains("Update source: Recorded source available; Healthy; current")); #expect(text.contains("Most recent operation: Completed")); #expect(text.contains("Operation log available: Yes"))
+}
+
+@Test @MainActor func missingCfgutilShowsSetupRequirementOnlyWhenActuallyUnavailable() async {
+    let missing = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(cfgutil: false), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await missing.load(); #expect(missing.cfgutilSetupRequired)
+    let available = model(); await available.load(); #expect(!available.cfgutilSetupRequired)
+    let demo = AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(cfgutil: false), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true)
+    await demo.load(); #expect(!demo.cfgutilSetupRequired)
 }
 
 @Test @MainActor func noTargetFirmwareLibraryBrowsesEveryPlatform() async {
@@ -900,6 +943,9 @@ private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscoverin
     await app.refreshDiagnosticsAndTarget(); app.revive()
     #expect(await waitForRestoreState(app) { if case .failed = $0 { true } else { false } })
     #expect(!app.operationInProgress); #expect(app.targetWorkflowState == .recovery)
+    #expect(app.presentedError?.contains("fixture failure") == true)
+    #expect(app.presentedError?.contains("Refresh and verify the device is still connected") == true)
+    #expect(app.presentedError?.contains("View the operation log") == true)
     await app.refreshDiagnosticsAndTarget(); #expect(app.target?.state == .recovery); #expect(app.canRevive)
     app.revive(); #expect(await waitForRestoreState(app) { _ in engine.callCount == 2 && !app.operationInProgress })
 }

@@ -54,11 +54,13 @@ private func updateFixture(_ name: String = UUID().uuidString) throws -> (URL, U
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), box = UpdateServiceBox()
     let record = root.appendingPathComponent("update-source")
     let coordinator = UpdateCoordinator(service: MockUpdateService(box: box), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"))
+    #expect(coordinator.shareableSourceHealth == "Source not recorded")
     await coordinator.check(manual: true)
     guard case .failed(let missing) = coordinator.state else { Issue.record("Expected missing-record failure"); return }
     #expect(missing.contains("has not been recorded"))
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     try "/deleted/source".write(to: record, atomically: true, encoding: .utf8)
+    #expect(coordinator.shareableSourceHealth == "Recorded source unavailable")
     await coordinator.check(manual: true)
     guard case .failed(let deleted) = coordinator.state else { Issue.record("Expected deleted-source failure"); return }
     #expect(deleted.contains("could not be found")); #expect(box.checks == 0)

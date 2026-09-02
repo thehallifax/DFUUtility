@@ -296,6 +296,20 @@ public final class AppModel: ObservableObject {
         }
     }
     public var managedCacheTotalBytes: Int64 { managedCacheEntries.reduce(0) { $0 + $1.sizeBytes } }
+    public var cfgutilSetupRequired: Bool {
+        !isDemoMode && !isUpdateTestMode && doctorReport?.status.host.cfgutilPath == nil
+    }
+    public var shareableDiagnosticsText: String {
+        ShareableDiagnostics.render(
+            report: doctorReport,
+            privilegeMode: privilegeMode,
+            cacheEntries: managedCacheEntries,
+            updateState: updateCoordinator.state,
+            updateSourceHealth: updateCoordinator.shareableSourceHealth,
+            operationState: restoreState,
+            operationLogAvailable: lastLogURL != nil
+        )
+    }
     public var managedCacheDirectoryURL: URL { cache.directory }
     public func cacheRevealURL(for entry: ManagedIPSWEntry) -> URL { entry.url }
     public func prepareCacheDirectoryForReveal() -> URL? { do { try cache.prepare(); return cache.directory } catch { presentedError = "Unable to open the IPSW cache.\n\(error.localizedDescription)"; return nil } }
@@ -743,7 +757,7 @@ public final class AppModel: ObservableObject {
         let recommendedKey = catalogueReleases.first.map(FirmwareReleaseKey.init)
         imageChoices = visible.map { release in
             let compatibility: IPSWCompatibility
-            if release.supportedDevices.isEmpty { compatibility = .universalAppleSilicon }
+            if release.supportedDevices.isEmpty { compatibility = release.platform == .macOS ? .universalAppleSilicon : .uncertain }
             else if let model = target?.restoreProductType, release.supportedDevices.contains(model) { compatibility = .compatible(model: model) }
             else { compatibility = .uncertain }
             return IPSWChoice(release: release, isRecommended: FirmwareReleaseKey(release) == recommendedKey, cacheState: cacheState(for: release), compatibility: compatibility)
@@ -897,7 +911,9 @@ public final class AppModel: ObservableObject {
             } catch {
                 guard generation == operationGeneration, !Task.isCancelled else { return }
                 if let log { try? operationLogger.append("FAILED: \(error.localizedDescription)\nOperation context cleared", to: log) }
-                restoreState = .failed(error.localizedDescription); presentedError = "\(action.operationName) failed.\n\(error.localizedDescription)"
+                restoreState = .failed(error.localizedDescription)
+                let logGuidance = log == nil ? "" : " View the operation log for technical details."
+                presentedError = "\(action.operationName) failed.\n\(error.localizedDescription)\n\nRefresh and verify the device is still connected. Check the selected firmware where applicable.\(logGuidance)"
             }
             if generation == operationGeneration { operationTask = nil }
         }
