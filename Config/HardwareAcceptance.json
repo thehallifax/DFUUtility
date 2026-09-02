@@ -42,13 +42,13 @@
     "observationDate": "2026-08-23",
     "results": {
       "normalDetection": "PASS",
-      "recoveryDetection": "PENDING",
+      "recoveryDetection": "PASS",
       "guidedDFU": "PASS",
       "sameECIDVerification": "PASS",
       "imageDiscovery": "PASS",
       "guiImageDownload": "PASS",
       "ipswValidation": "PASS",
-      "guiRestore": "PENDING",
+      "guiRestore": "PASS",
       "liveProgress": "PENDING",
       "targetRestartVerification": "PENDING"
     },
@@ -59,7 +59,7 @@
       "dfuEnumerationSeconds": 17.170
     },
     "cableObservation": "The current physical-Home timing profile succeeded. This observation does not establish that USB-A to Lightning is required; alternate cable advice remains troubleshooting guidance only.",
-    "scopeNote": "Real Normal-state detection, guided same-ECID DFU, compatible iPadOS discovery, GUI download, and IPSW validation have passed. Recovery detection, destructive Restore, live Restore progress, restart verification, and end-to-end acceptance remain pending."
+    "scopeNote": "Real Normal and Recovery detection, guided same-ECID DFU, compatible iPadOS discovery, GUI download, IPSW validation, and Recovery-mode GUI Restore have passed. Live Restore progress, restart verification, and full end-to-end acceptance remain pending."
   },
-  "scopeNote": "Mac14,2 and iPhone7,2 are accepted end-to-end. iPad7,11 has passed Normal detection, guided same-ECID DFU, firmware discovery, GUI download, and validation; destructive Restore remains pending. Broader Apple Silicon, Intel T2, iPhone, and iPad coverage remains pending."
+  "scopeNote": "Mac14,2 and iPhone7,2 are accepted end-to-end. iPad7,11 has passed Normal and Recovery detection, guided same-ECID DFU, firmware discovery, GUI download, validation, and Recovery-mode GUI Restore; live progress, restart verification, and full end-to-end acceptance remain pending. Broader Apple Silicon, Intel T2, iPhone, and iPad coverage remains pending."
 }

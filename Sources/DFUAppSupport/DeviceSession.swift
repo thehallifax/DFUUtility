@@ -84,6 +84,7 @@ public struct DeviceSession: Identifiable, Equatable, Sendable {
 public final class DeviceSessionManager: ObservableObject {
     @Published public private(set) var sessions: [DeviceSession] = []
     @Published public private(set) var activeBatchIDs: [DeviceSessionID] = []
+    private var activeBatchFirmwareBySession: [DeviceSessionID: URL] = [:]
 
     public init() {}
 
@@ -136,9 +137,21 @@ public final class DeviceSessionManager: ObservableObject {
     public func freezeSelectedBatch() -> [DeviceSession] {
         let frozen = selectedSessions
         activeBatchIDs = frozen.map(\.id)
+        activeBatchFirmwareBySession = Dictionary(uniqueKeysWithValues: frozen.compactMap { session in
+            session.selectedImageURL.map { (session.id, $0.standardizedFileURL) }
+        })
         return frozen
     }
-    public func finishBatch() { activeBatchIDs = [] }
+    public func finishBatchWork(for id: DeviceSessionID) {
+        activeBatchFirmwareBySession[id] = nil
+    }
+    public func isFirmwareInUseByBatch(_ url: URL) -> Bool {
+        activeBatchFirmwareBySession.values.contains(url.standardizedFileURL)
+    }
+    public func finishBatch() {
+        activeBatchIDs = []
+        activeBatchFirmwareBySession = [:]
+    }
 
     public func update(_ id: DeviceSessionID, _ change: (inout DeviceSession) -> Void) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
@@ -266,21 +279,26 @@ public final class BatchCoordinator: ObservableObject {
         var succeeded = 0, failed = 0, cancelled = 0
         for (index, snapshot) in frozen.enumerated() {
             if stopRequested {
-                for remaining in frozen[index...] { sessions.update(remaining.id) { $0.operationState = .cancelled }; cancelled += 1 }
+                for remaining in frozen[index...] {
+                    sessions.update(remaining.id) { $0.operationState = .cancelled }
+                    sessions.finishBatchWork(for: remaining.id)
+                    cancelled += 1
+                }
                 break
             }
             currentIndex = index
             guard let current = sessions.sessions.first(where: { $0.id == snapshot.id }), current.isConnected else {
-                sessions.update(snapshot.id) { $0.operationState = .failed("Device disconnected before its queued operation began.") }; failed += 1; continue
+                sessions.update(snapshot.id) { $0.operationState = .failed("Device disconnected before its queued operation began.") }
+                sessions.finishBatchWork(for: snapshot.id); failed += 1; continue
             }
             let currentFailure: String? = switch kind {
             case .restore: current.restoreEligibilityFailure
             case .revive: current.reviveEligibilityFailure
             case .restart: current.restartEligibilityFailure
             }
-            if let currentFailure { sessions.update(snapshot.id) { $0.operationState = .failed(currentFailure) }; failed += 1; continue }
-            guard let ecid = snapshot.ecid else { sessions.update(snapshot.id) { $0.operationState = .failed("Target identity became unavailable.") }; failed += 1; continue }
-            if kind == .restore, snapshot.selectedImageURL == nil { sessions.update(snapshot.id) { $0.operationState = .failed("The validated IPSW became unavailable.") }; failed += 1; continue }
+            if let currentFailure { sessions.update(snapshot.id) { $0.operationState = .failed(currentFailure) }; sessions.finishBatchWork(for: snapshot.id); failed += 1; continue }
+            guard let ecid = snapshot.ecid else { sessions.update(snapshot.id) { $0.operationState = .failed("Target identity became unavailable.") }; sessions.finishBatchWork(for: snapshot.id); failed += 1; continue }
+            if kind == .restore, snapshot.selectedImageURL == nil { sessions.update(snapshot.id) { $0.operationState = .failed("The validated IPSW became unavailable.") }; sessions.finishBatchWork(for: snapshot.id); failed += 1; continue }
             let generation = snapshot.generation &+ 1
             let log = try? logger.start(operation: "Batch \(kind.rawValue)", target: snapshot.device, release: snapshot.selectedRelease)
             sessions.update(snapshot.id) { $0.generation = generation; $0.operationLogURL = log; $0.operationState = .running(stage: "Preparing", fraction: nil) }
@@ -310,6 +328,7 @@ public final class BatchCoordinator: ObservableObject {
                 if let log { try? logger.append("FAILED: \(error.localizedDescription)", to: log) }
                 failed += 1
             }
+            sessions.finishBatchWork(for: snapshot.id)
         }
         summary = BatchSummary(total: frozen.count, succeeded: succeeded, failed: failed, cancelled: cancelled)
         currentIndex = nil; isRunning = false; sessions.finishBatch(); task = nil

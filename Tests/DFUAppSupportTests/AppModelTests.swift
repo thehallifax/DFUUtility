@@ -385,6 +385,32 @@ private let noOpLogger = AppMockLogger()
     #expect(restore.callCount == 0); #expect(app.managedCacheEntries.isEmpty)
 }
 
+@Test @MainActor func appCacheMutationGateProtectsFrozenBatchFirmwareOnlyWhileReferenced() {
+    let app = model()
+    let protectedURL = URL(fileURLWithPath: "/managed/protected.ipsw")
+    let unrelatedURL = URL(fileURLWithPath: "/managed/unrelated.ipsw")
+    let release = makeRelease()
+    let protectedEntry = ManagedIPSWEntry(release: release, state: .completeValidated, sizeBytes: 10, url: protectedURL)
+    let unrelatedEntry = ManagedIPSWEntry(release: makeRelease("26.6.1", "OTHER"), state: .completeValidated, sizeBytes: 10, url: unrelatedURL)
+    app.deviceSessions.reconcile([
+        DFUDevice(family: .mac, state: .dfu, ecid: "ACTIVE", productType: "Mac14,2"),
+        DFUDevice(family: .mac, state: .dfu, ecid: "QUEUED", productType: "Mac14,2")
+    ])
+    for session in app.deviceSessions.sessions {
+        app.deviceSessions.setFirmware(for: session.id, release: release, url: protectedURL, validation: .validated)
+        app.deviceSessions.select(session.id, selected: true)
+    }
+    let frozen = app.deviceSessions.freezeSelectedBatch()
+
+    #expect(app.cacheRemovalDisabledReason(for: protectedEntry) == "This firmware is being used by the current batch.")
+    #expect(app.cacheRemovalDisabledReason(for: unrelatedEntry) == nil)
+    app.deviceSessions.finishBatchWork(for: frozen[0].id)
+    #expect(app.cacheRemovalDisabledReason(for: protectedEntry) != nil)
+    app.deviceSessions.finishBatchWork(for: frozen[1].id)
+    #expect(app.cacheRemovalDisabledReason(for: protectedEntry) == nil)
+    app.deviceSessions.finishBatch()
+}
+
 @Test @MainActor func cancelledDownloadReturnsToResumablePartialState() async throws {
     let release = makeRelease(), cache = tempCache(); try cache.prepare(); try Data("resume".utf8).write(to: cache.partialURL(for: release))
     let app = model(service: AppMockService(releases: [release], events: [.started(release: release), .resumed(existingBytes: 6), .cancelled]), cache: cache)

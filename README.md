@@ -129,9 +129,9 @@ The flags may be combined. In-app and shell updates are intended for clean end-u
 | --- | --- | --- | --- | --- |
 | MacBook Air M2 | `Mac14,2` | Normal/DFU: PASS | GUI same-ECID DFU: PASS | Restore and Revive: PASS |
 | iPhone 6 | `iPhone7,2` | Normal/Recovery/DFU: PASS | Same-ECID DFU: PASS | End-to-end Restore: PASS |
-| iPad (7th generation) Wi-Fi | `iPad7,11` | Normal/DFU: PASS; Recovery: pending | Same-ECID DFU: PASS | Destructive Restore: not tested |
+| iPad (7th generation) Wi-Fi | `iPad7,11` | Normal/Recovery/DFU: PASS | Same-ECID DFU: PASS | Recovery-mode Restore: PASS; progress/restart verification pending |
 
-For `iPad7,11`, compatible iPadOS discovery, GUI download, and IPSW validation also passed on real hardware. The authoritative, deliberately scoped record is [Config/HardwareAcceptance.json](Config/HardwareAcceptance.json).
+For `iPad7,11`, compatible iPadOS discovery, GUI download, IPSW validation, and Recovery-mode GUI Restore passed on real hardware. Live Restore progress, restart verification, and full end-to-end acceptance remain pending. The authoritative, deliberately scoped record is [Config/HardwareAcceptance.json](Config/HardwareAcceptance.json).
 
 ## Older Lightning troubleshooting
 
@@ -182,5 +182,4 @@ DFUUtility is licensed under the [Apache License 2.0](LICENSE).
 ## Third-party software
 
 DFUUtility bundles upstream [Asahi Linux macvdmtool](https://github.com/AsahiLinux/macvdmtool) at commit `b22ae51eb43a0e1daa21d41616ac899f28e7bf8a`. macvdmtool remains Copyright 2021 The Asahi Linux Contributors and Apache-2.0 licensed; DFUUtility does not claim ownership or relicense it. Its upstream source, attribution, [license](Vendor/macvdmtool/LICENSE), and [revision record](Vendor/macvdmtool/UPSTREAM_REVISION) are preserved and included in packaged apps.
-
 

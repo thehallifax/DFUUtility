@@ -70,6 +70,40 @@ private func sessionDevice(_ family: AppleDeviceFamily, _ state: DeviceState, _ 
     #expect(manager.sessions.allSatisfy { $0.selectedImageURL == shared && $0.firmwareState == .validated })
 }
 
+@Test @MainActor func frozenBatchFirmwareDependenciesAreReferenceCountedUntilWorkEnds() {
+    let manager = DeviceSessionManager()
+    manager.reconcile([
+        sessionDevice(.iPhone, .recovery, "ACTIVE", product: "iPhone15,2"),
+        sessionDevice(.iPhone, .recovery, "QUEUED-SHARED", product: "iPhone15,2"),
+        sessionDevice(.iPhone, .recovery, "QUEUED-UNIQUE", product: "iPhone15,2")
+    ])
+    let shared = URL(fileURLWithPath: "/managed/shared.ipsw")
+    let unique = URL(fileURLWithPath: "/managed/unique.ipsw")
+    let unrelated = URL(fileURLWithPath: "/managed/unrelated.ipsw")
+    for session in manager.sessions {
+        let url = session.ecid == "QUEUED-UNIQUE" ? unique : shared
+        manager.setFirmware(for: session.id, release: nil, url: url, validation: .validated)
+        manager.select(session.id, selected: true)
+    }
+
+    let frozen = manager.freezeSelectedBatch()
+    let active = frozen.first { $0.ecid == "ACTIVE" }!
+    let queuedShared = frozen.first { $0.ecid == "QUEUED-SHARED" }!
+    let queuedUnique = frozen.first { $0.ecid == "QUEUED-UNIQUE" }!
+    #expect(manager.isFirmwareInUseByBatch(shared))
+    #expect(manager.isFirmwareInUseByBatch(unique))
+    #expect(!manager.isFirmwareInUseByBatch(unrelated))
+
+    manager.finishBatchWork(for: active.id)
+    #expect(manager.isFirmwareInUseByBatch(shared))
+    manager.finishBatchWork(for: queuedShared.id)
+    #expect(!manager.isFirmwareInUseByBatch(shared))
+    #expect(manager.isFirmwareInUseByBatch(unique))
+    manager.finishBatchWork(for: queuedUnique.id)
+    #expect(!manager.isFirmwareInUseByBatch(unique))
+    manager.finishBatch()
+}
+
 @Test @MainActor func mixedFamilyEligibilityIsExplicit() {
     let manager = DeviceSessionManager()
     let devices = [sessionDevice(.mac, .dfu, "MAC-DFU", product: "Mac14,2"), sessionDevice(.mac, .recovery, "MAC-REC", product: "Mac14,2"), sessionDevice(.iPhone, .recovery, "PHONE", product: "iPhone15,2"), sessionDevice(.iPad, .normal, "PAD", product: "iPad13,18")]
@@ -154,6 +188,7 @@ private struct BatchLoggerFixture: OperationLogging {
     #expect(coordinator.summary == BatchSummary(total: 3, succeeded: 1, failed: 0, cancelled: 2))
     #expect(fixture.actions.count == 1)
     #expect(manager.sessions.filter { $0.operationState == .cancelled }.count == 2)
+    #expect(!manager.isFirmwareInUseByBatch(URL(fileURLWithPath: "/shared.ipsw")))
 }
 
 @Test @MainActor func queuedDisconnectFailsOnlyThatSessionAndBatchContinues() async {

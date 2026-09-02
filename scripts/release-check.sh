@@ -177,20 +177,24 @@ ipad_normal=$(plutil -extract iPadHardware.results.normalDetection raw "$accepta
 ipad_recovery=$(plutil -extract iPadHardware.results.recoveryDetection raw "$acceptance" 2>/dev/null || true)
 ipad_dfu=$(plutil -extract iPadHardware.results.guidedDFU raw "$acceptance" 2>/dev/null || true)
 ipad_same_ecid=$(plutil -extract iPadHardware.results.sameECIDVerification raw "$acceptance" 2>/dev/null || true)
-ipad_pending=true
-for key in recoveryDetection guiRestore liveProgress targetRestartVerification; do
-  [ "$(plutil -extract "iPadHardware.results.$key" raw "$acceptance" 2>/dev/null || true)" = PENDING ] || ipad_pending=false
+ipad_restore=true
+for key in recoveryDetection guiRestore; do
+  [ "$(plutil -extract "iPadHardware.results.$key" raw "$acceptance" 2>/dev/null || true)" = PASS ] || ipad_restore=false
+done
+ipad_unobserved_pending=true
+for key in liveProgress targetRestartVerification; do
+  [ "$(plutil -extract "iPadHardware.results.$key" raw "$acceptance" 2>/dev/null || true)" = PENDING ] || ipad_unobserved_pending=false
 done
 ipad_firmware=true
 for key in imageDiscovery guiImageDownload ipswValidation; do
   [ "$(plutil -extract "iPadHardware.results.$key" raw "$acceptance" 2>/dev/null || true)" = PASS ] || ipad_firmware=false
 done
-if [ "$ipad_product" = iPad7,11 ] && [ "$ipad_normal" = PASS ] && [ "$ipad_dfu" = PASS ] && [ "$ipad_same_ecid" = PASS ] && [ "$ipad_firmware" = true ] && [ "$ipad_pending" = true ]; then
-  pass "iPad acceptance" "iPad7,11 — DFU and firmware validated; Recovery/Restore pending"
+if [ "$ipad_product" = iPad7,11 ] && [ "$ipad_normal" = PASS ] && [ "$ipad_dfu" = PASS ] && [ "$ipad_same_ecid" = PASS ] && [ "$ipad_firmware" = true ] && [ "$ipad_restore" = true ] && [ "$ipad_unobserved_pending" = true ]; then
+  pass "iPad acceptance" "iPad7,11 — Recovery-mode Restore accepted; progress/restart verification pending"
 else
   fail "iPad acceptance" "iPad7,11 status is missing or overclaims untested milestones"
 fi
-warn "Hardware coverage" "Mac14,2 and iPhone7,2 accepted end-to-end; iPad7,11 DFU/firmware only; broader coverage pending"
+warn "Hardware coverage" "Mac14,2 and iPhone7,2 accepted end-to-end; iPad7,11 Recovery-mode Restore accepted with progress/restart verification pending; broader coverage pending"
 
 result=$(release_result "$failures" "$warnings" "$mode")
 echo

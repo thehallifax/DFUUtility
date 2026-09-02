@@ -682,6 +682,7 @@ public final class AppModel: ObservableObject {
 
     public func cacheRemovalDisabledReason(for entry: ManagedIPSWEntry) -> String? {
         if isDemoMode { return "Demo firmware is read-only." }
+        if deviceSessions.isFirmwareInUseByBatch(entry.url) { return "This firmware is being used by the current batch." }
         if case .downloading = downloadState, selectedRelease?.build == entry.release.build && selectedRelease?.platform == entry.release.platform { return "This image is currently downloading." }
         if case .validating = downloadState, selectedRelease?.build == entry.release.build && selectedRelease?.platform == entry.release.platform { return "This image is currently being validated." }
         let operationActive = if case .running = restoreState { true } else if case .reconnecting = restoreState { true } else { false }

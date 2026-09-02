@@ -30,7 +30,7 @@ Because its topology is Top + physical Home, it reuses the existing `physicalHom
 
 Real Normal-state discovery, guided DFU, and same-ECID DFU verification are PASS. The successful packaged-GUI attempt reported DFU detected for the authoritative target ECID. Sanitized monotonic timing was: disappearance at +5.370 s, release cue at +6.438 s, and DFU enumeration at +17.170 s. No restore was initiated, and the successful run does not justify changing the current timing profile.
 
-Recovery has not been observed on this iPad. Image download, IPSW validation, Restore, live progress, restart verification, and end-to-end Restore acceptance remain pending. The profile's optional repeated-Recovery cable note remains a troubleshooting option only; this test does not establish that USB-A to Lightning is required.
+Subsequent packaged-GUI hardware acceptance observed this iPad in Recovery and completed a Recovery-mode GUI Restore successfully after compatible iPadOS discovery, download, and IPSW validation. Those observations establish Recovery detection and GUI Restore only. Live Restore progress, restart verification, and full end-to-end Restore acceptance were not separately recorded and remain pending. The profile's optional repeated-Recovery cable note remains a troubleshooting option only; this test does not establish that USB-A to Lightning is required.
 
 This spike investigates whether DFUUtility can move an iPhone or iPad from Normal or Recovery mode into Device Firmware Update (DFU) mode without physical button interaction. It does not change the current restore implementation and did not send commands to a device.
 

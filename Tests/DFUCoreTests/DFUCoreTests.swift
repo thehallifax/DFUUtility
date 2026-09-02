@@ -732,15 +732,18 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
     #expect(value.mobileHardware.cableObservation.contains("not a universal")); #expect(value.mobileHardware.scopeNote.contains("Broader"))
     #expect(value.iPadHardware.displayName == "iPad (7th generation) Wi-Fi"); #expect(value.iPadHardware.productType == "iPad7,11"); #expect(value.iPadHardware.modelNumber == "A2197")
     #expect([value.iPadHardware.results.normalDetection, value.iPadHardware.results.guidedDFU, value.iPadHardware.results.sameECIDVerification, value.iPadHardware.results.imageDiscovery, value.iPadHardware.results.guiImageDownload, value.iPadHardware.results.ipswValidation].allSatisfy { $0 == "PASS" })
-    #expect([value.iPadHardware.results.recoveryDetection, value.iPadHardware.results.guiRestore, value.iPadHardware.results.liveProgress, value.iPadHardware.results.targetRestartVerification].allSatisfy { $0 == "PENDING" })
+    #expect([value.iPadHardware.results.recoveryDetection, value.iPadHardware.results.guiRestore].allSatisfy { $0 == "PASS" })
+    #expect([value.iPadHardware.results.liveProgress, value.iPadHardware.results.targetRestartVerification].allSatisfy { $0 == "PENDING" })
     #expect(value.iPadHardware.timingObservation.clock == "monotonic")
     #expect(value.iPadHardware.timingObservation.disappearanceSeconds == 5.370)
     #expect(value.iPadHardware.timingObservation.releaseCueSeconds == 6.438)
     #expect(value.iPadHardware.timingObservation.dfuEnumerationSeconds == 17.170)
     #expect(value.iPadHardware.cableObservation.contains("does not establish that USB-A to Lightning is required"))
-    #expect(value.iPadHardware.scopeNote.contains("Recovery detection") && value.iPadHardware.scopeNote.contains("remain pending"))
+    #expect(value.iPadHardware.scopeNote.contains("Recovery-mode GUI Restore") && value.iPadHardware.scopeNote.contains("remain pending"))
     let releaseCheck = try String(contentsOf: root.appendingPathComponent("scripts/release-check.sh"), encoding: .utf8)
-    #expect(releaseCheck.contains("pass \"Hardware acceptance\"")); #expect(releaseCheck.contains("pass \"iPhone acceptance\"")); #expect(releaseCheck.contains("pass \"iPad acceptance\"")); #expect(releaseCheck.contains("Recovery/Restore pending"))
+    #expect(releaseCheck.contains("pass \"Hardware acceptance\"")); #expect(releaseCheck.contains("pass \"iPhone acceptance\"")); #expect(releaseCheck.contains("pass \"iPad acceptance\""))
+    #expect(releaseCheck.contains("for key in recoveryDetection guiRestore")); #expect(releaseCheck.contains("for key in liveProgress targetRestartVerification"))
+    #expect(releaseCheck.contains("Recovery-mode Restore accepted; progress/restart verification pending"))
 }
 
 @Test func sanitizedIPhone72HardwareFixturesContainNoRealIdentifiers() throws {
