@@ -305,7 +305,16 @@ public final class AppModel: ObservableObject {
         guard !isDemoMode, let value = target?.ecid?.uppercased() else { return false }
         return value == "TEST" || value.hasPrefix("DEMO") || value.hasPrefix("TEST-")
     }
-    public var canRestore: Bool { !isDemoMode && target?.state == .dfu && imageURL != nil && selectedImageMatchesTarget && !operationInProgress }
+    public var canRestore: Bool {
+        guard !isDemoMode, let target else { return false }
+        return RestoreTargetStatePolicy.allowsRestore(target) && imageURL != nil && selectedImageMatchesTarget && !operationInProgress
+    }
+    public var restoreUnavailableMessage: String {
+        if let target, (target.family == .iPhone || target.family == .iPad), !RestoreTargetStatePolicy.allowsRestore(target) {
+            return "Restore requires the \(target.family.displayName) to be in Recovery or DFU mode."
+        }
+        return "Restore requires a compatible validated image and a positively detected supported target."
+    }
     public var canRevive: Bool {
         guard !isDemoMode, let target, !operationInProgress else { return false }
         return target.family == .mac ? (target.state == .dfu || target.state == .recovery) : target.state == .recovery
@@ -655,7 +664,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func restoreConfirmed() {
-        guard canRestore, let url = imageURL, let target else { presentedError = "Restore requires a compatible validated IPSW and a real DFU target."; return }
+        guard canRestore, let url = imageURL, let target else { presentedError = restoreUnavailableMessage; return }
         runRestore(targetDevices.count > 1 && target.ecid != nil ? .targetedRestore(url, ecid: target.ecid!) : .restore(url))
     }
     public func revive() {

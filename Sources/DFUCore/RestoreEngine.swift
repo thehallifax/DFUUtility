@@ -8,6 +8,23 @@ public enum RestoreAction: Sendable, Equatable {
     }
 }
 
+public enum RestoreTargetStatePolicy {
+    public static func allowsRestore(_ target: DFUDevice) -> Bool {
+        switch target.family {
+        case .iPhone, .iPad: target.state == .recovery || target.state == .dfu
+        case .mac, .unknown: target.state == .dfu
+        }
+    }
+
+    public static func validateRestore(_ target: DFUDevice) throws {
+        guard !allowsRestore(target) else { return }
+        if target.family == .iPhone || target.family == .iPad {
+            throw DFUError.invalidTargetState(operation: "Restore", target: target.family.displayName, allowedStates: [DeviceState.recovery.rawValue, DeviceState.dfu.rawValue])
+        }
+        throw DFUError.targetNotInDFU
+    }
+}
+
 public enum RestoreEvent: Sendable, Equatable {
     case preparing
     case waitingForDevice
@@ -161,7 +178,7 @@ public struct RestoreEngine: Sendable {
         }
         switch action {
         case .restore, .targetedRestore:
-            guard target.state == .dfu else { throw DFUError.targetNotInDFU }
+            try RestoreTargetStatePolicy.validateRestore(target)
         case .revive, .targetedRevive:
             let valid = target.family == .mac ? (target.state == .dfu || target.state == .recovery) : target.state == .recovery
             guard valid else { throw DFUError.targetNotInDFU }

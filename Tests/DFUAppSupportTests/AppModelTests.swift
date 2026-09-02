@@ -482,6 +482,30 @@ private let noOpLogger = AppMockLogger()
     let normal = model(service: AppMockService(releases: [compatible]), devices: [DFUDevice(family: .iPhone, state: .normal, ecid: "PHONE", productType: "iPhone15,2")], cache: cache); await normal.load(); #expect(!normal.canRestore)
 }
 
+@Test @MainActor func mobileRestoreCapabilityAllowsRecoveryAndDFUButNotNormal() async throws {
+    func loadedModel(family: AppleDeviceFamily, state: DeviceState) async throws -> AppModel {
+        let product = family == .iPhone ? "iPhone15,2" : "iPad13,18"
+        let platform: RestorePlatform = family == .iPhone ? .iOS : .iPadOS
+        let value = IPSWRelease(platform: platform, version: "26.6.1", build: family == .iPhone ? "23G83" : "23G84", downloadURL: URL(string: "https://updates.cdn-apple.com/mobile.ipsw")!, supportedDevices: [product])
+        let cache = tempCache(); try cache.prepare(for: value); try Data("valid".utf8).write(to: cache.partialURL(for: value)); _ = try cache.commit(partial: cache.partialURL(for: value), release: value)
+        let app = model(service: AppMockService(releases: [value]), devices: [DFUDevice(family: family, state: state, ecid: "SYNTHETIC-ECID", productType: product)], cache: cache)
+        await app.load()
+        return app
+    }
+
+    for family in [AppleDeviceFamily.iPhone, .iPad] {
+        let recovery = try await loadedModel(family: family, state: .recovery)
+        #expect(recovery.canRestore)
+        let dfu = try await loadedModel(family: family, state: .dfu)
+        #expect(dfu.canRestore)
+        let normal = try await loadedModel(family: family, state: .normal)
+        #expect(!normal.canRestore)
+        #expect(normal.restoreUnavailableMessage == "Restore requires the \(family.displayName) to be in Recovery or DFU mode.")
+        normal.restoreConfirmed()
+        #expect(normal.presentedError == normal.restoreUnavailableMessage)
+    }
+}
+
 @Test @MainActor func multipleTargetsRequireExplicitECIDSelection() async {
     let devices = [DFUDevice(family: .mac, state: .dfu, ecid: "MAC", productType: "Mac14,2"), DFUDevice(family: .iPad, state: .dfu, ecid: "PAD", productType: "iPad13,18")]
     let app = model(devices: devices); await app.refreshDiagnosticsAndTarget(); #expect(app.target == nil)

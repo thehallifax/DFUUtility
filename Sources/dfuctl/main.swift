@@ -42,7 +42,7 @@ struct DFUCLI {
         guard arguments.allSatisfy({ $0 == "--download" }) else { usage(exitCode: 64) }
         let devices = try ConfiguratorDeviceDiscovery().devices()
         guard devices.count == 1 else { if devices.isEmpty { throw DFUError.noTarget }; throw DFUError.multipleTargets(devices.count) }
-        guard devices[0].state == .dfu else { throw DFUError.targetNotInDFU }
+        try RestoreTargetStatePolicy.validateRestore(devices[0])
         let service = AppleIPSWService(), cache = IPSWCache(), validator = IPSWValidator()
         let release = try await service.recommendedImage(for: devices[0])
         var url = try cache.validCachedURL(for: release, validator: validator)

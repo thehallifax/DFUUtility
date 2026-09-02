@@ -85,6 +85,7 @@ public enum DFUError: LocalizedError, Equatable {
     case noTarget
     case multipleTargets(Int)
     case targetNotInDFU
+    case invalidTargetState(operation: String, target: String, allowedStates: [String])
     case transitionTimedOut
     case targetChanged(expected: String, actual: String?)
     case invalidIPSW(String)
@@ -98,6 +99,8 @@ public enum DFUError: LocalizedError, Equatable {
         case .noTarget: "No suitable target Apple device was detected. Check the data-capable cable and connection mode."
         case .multipleTargets(let count): "Found \(count) possible targets. Disconnect all but one target."
         case .targetNotInDFU: "A target is connected, but it is not in DFU mode."
+        case .invalidTargetState(let operation, let target, let allowedStates):
+            "\(operation) requires the \(target) to be in \(Self.joinedStates(allowedStates)) mode."
         case .transitionTimedOut: "The target did not appear in DFU mode before the timeout. Check the cable and DFU port."
         case .targetChanged(let expected, let actual): "DFU transition could not be verified for the original target (expected ECID \(expected), found \(actual ?? "unknown"))."
         case .invalidIPSW(let reason): "Invalid IPSW: \(reason)"
@@ -105,5 +108,11 @@ public enum DFUError: LocalizedError, Equatable {
             "Command failed (exit \(status)): \(command)\n\(output)"
         case .privilegeRequired(let output): "Administrator authorization for macvdmtool failed.\n\(output)"
         }
+    }
+
+    private static func joinedStates(_ states: [String]) -> String {
+        guard let last = states.last else { return "a supported" }
+        guard states.count > 1 else { return last }
+        return states.dropLast().joined(separator: ", ") + " or " + last
     }
 }

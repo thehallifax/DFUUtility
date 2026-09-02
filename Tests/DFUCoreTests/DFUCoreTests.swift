@@ -177,6 +177,66 @@ private actor MockDownloader: IPSWDownloading {
     #expect(command.2.family == .iPhone); #expect(command.1.contains("PHONE")); #expect(command.1.suffix(2) == ["--ipsw", ipsw.path])
 }
 
+private struct FixedRestoreDiscovery: DeviceDiscovering {
+    let values: [DFUDevice]
+    func devices() throws -> [DFUDevice] { values }
+}
+
+private func mobileRestoreCommand(family: AppleDeviceFamily, state: DeviceState, product: String, ecid: String = "SYNTHETIC-ECID", manifestProducts: [String]? = nil) throws -> (URL, [String], DFUDevice) {
+    let root = try temporaryDirectory(), ipsw = root.appendingPathComponent("mobile.ipsw")
+    try Data(repeating: 0, count: 1_100_001).write(to: ipsw)
+    let manifest = try PropertyListSerialization.data(fromPropertyList: ["SupportedProductTypes": manifestProducts ?? [product]], format: .xml, options: 0)
+    let runner = SequenceCommandRunner([result("BuildManifest.plist\nRestore.plist\n"), result("BuildManifest.plist\nRestore.plist\n"), CommandResult(status: 0, stdout: manifest, stderr: Data())])
+    let target = DFUDevice(family: family, state: state, ecid: ecid, productType: product)
+    return try RestoreEngine(discovery: FixedRestoreDiscovery(values: [target]), runner: runner, cfgutil: URL(fileURLWithPath: "/cfgutil")).command(for: .restore(ipsw))
+}
+
+@Test func restoreEngineUsesExplicitFamilyStateMatrix() throws {
+    for family in [AppleDeviceFamily.iPhone, .iPad] {
+        let product = family == .iPhone ? "iPhone15,2" : "iPad13,18"
+        for state in [DeviceState.recovery, .dfu] {
+            let command = try mobileRestoreCommand(family: family, state: state, product: product)
+            #expect(command.2.state == state)
+            #expect(command.1.contains("restore")); #expect(command.1.contains("--ipsw"))
+        }
+        do {
+            _ = try mobileRestoreCommand(family: family, state: .normal, product: product)
+            Issue.record("Expected Normal-state mobile Restore rejection")
+        } catch let error as DFUError {
+            #expect(error.localizedDescription == "Restore requires the \(family.displayName) to be in Recovery or DFU mode.")
+        }
+    }
+    #expect(RestoreTargetStatePolicy.allowsRestore(DFUDevice(family: .mac, state: .dfu)))
+    #expect(!RestoreTargetStatePolicy.allowsRestore(DFUDevice(family: .mac, state: .recovery)))
+    #expect(!RestoreTargetStatePolicy.allowsRestore(DFUDevice(family: .mac, state: .normal)))
+}
+
+@Test func recoveryMobileRestoreKeepsTargetedCfgutilCommandShape() throws {
+    let phone = try mobileRestoreCommand(family: .iPhone, state: .recovery, product: "iPhone15,2", ecid: "PHONE-ECID")
+    #expect(phone.1.prefix(7) == ["--progress", "--verbose", "--timeout", "30", "--ecid", "PHONE-ECID", "restore"])
+    #expect(phone.1[phone.1.count - 2] == "--ipsw"); #expect(phone.1.last?.hasSuffix("mobile.ipsw") == true)
+    let pad = try mobileRestoreCommand(family: .iPad, state: .recovery, product: "iPad13,18", ecid: "PAD-ECID")
+    #expect(pad.1.contains("PAD-ECID")); #expect(pad.1.contains("restore")); #expect(pad.1.contains("--ipsw"))
+}
+
+@Test func mobileRestoreStillRequiresProductCompatibilityAndSingleTarget() throws {
+    #expect(throws: DFUError.self) { _ = try mobileRestoreCommand(family: .iPhone, state: .recovery, product: "iPhone15,2", manifestProducts: ["iPhone16,1"]) }
+
+    let root = try temporaryDirectory(), ipsw = root.appendingPathComponent("mobile.ipsw")
+    try Data(repeating: 0, count: 1_100_001).write(to: ipsw)
+    let validationRunner = SequenceCommandRunner([result("BuildManifest.plist\nRestore.plist\n")])
+    let missingProduct = DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE")
+    #expect(throws: DFUError.invalidIPSW("the selected mobile target does not expose a product type")) {
+        _ = try RestoreEngine(discovery: FixedRestoreDiscovery(values: [missingProduct]), runner: validationRunner, cfgutil: URL(fileURLWithPath: "/cfgutil")).command(for: .restore(ipsw))
+    }
+
+    let twoTargets = [DFUDevice(family: .iPhone, state: .recovery, ecid: "ONE", productType: "iPhone15,2"), DFUDevice(family: .iPad, state: .recovery, ecid: "TWO", productType: "iPad13,18")]
+    let multipleRunner = SequenceCommandRunner([result("BuildManifest.plist\nRestore.plist\n")])
+    #expect(throws: DFUError.multipleTargets(2)) {
+        _ = try RestoreEngine(discovery: FixedRestoreDiscovery(values: twoTargets), runner: multipleRunner, cfgutil: URL(fileURLWithPath: "/cfgutil")).command(for: .restore(ipsw))
+    }
+}
+
 @Test func sortsVersionsNumericallyAndSelectsLatest() async throws {
     let old = release(version: "15.10", build: "24Z1"), latest = release(version: "26.6.2", build: "25G83"), middle = release(version: "26.6", build: "25G70")
     #expect(AppleIPSWService.sortNewestFirst([old, latest, middle]).map(\.version) == ["26.6.2", "26.6", "15.10"])

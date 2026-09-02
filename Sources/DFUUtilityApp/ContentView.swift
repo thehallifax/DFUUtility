@@ -149,7 +149,7 @@ struct ContentView: View {
                     if let log = model.lastLogURL { Button("View Log") { NSWorkspace.shared.open(log) } }
                     Button("Reveal Logs in Finder") { NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DFUUtility")]) }
                 }
-                if !model.canRestore { Text("Restore requires a validated image and a positively detected real DFU target.").font(.caption).foregroundStyle(.secondary) }
+                if !model.canRestore { Text(model.restoreUnavailableMessage).font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label(model.restoreSectionTitle, systemImage: "arrow.down.circle") }
     }
