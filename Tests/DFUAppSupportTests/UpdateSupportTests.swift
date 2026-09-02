@@ -6,17 +6,28 @@ private final class UpdateServiceBox: @unchecked Sendable {
     private let lock = NSLock()
     var result: AppUpdateState = .current
     var error: Error?
+    var launchError: Error?
     private(set) var checks = 0
     private(set) var launches = 0
     private(set) var launchedSource: URL?
     func checked() throws -> AppUpdateState { lock.lock(); defer { lock.unlock() }; checks += 1; if let error { throw error }; return result }
-    func launched(_ source: URL) { lock.lock(); defer { lock.unlock() }; launches += 1; launchedSource = source }
+    private(set) var events: [String] = []
+    func launched(_ source: URL) throws { lock.lock(); defer { lock.unlock() }; launches += 1; launchedSource = source; events.append("launch"); if let launchError { throw launchError } }
+    func terminated() { lock.lock(); defer { lock.unlock() }; events.append("terminate") }
+    var recordedEvents: [String] { lock.withLock { events } }
 }
 
 private struct MockUpdateService: UpdateServicing {
     let box: UpdateServiceBox
     func check(sourceRoot: URL) async throws -> AppUpdateState { try box.checked() }
-    func launch(sourceRoot: URL, oldPID: Int32, appURL: URL, resultURL: URL) throws { box.launched(sourceRoot) }
+    func launch(sourceRoot: URL, oldPID: Int32, appURL: URL, resultURL: URL) throws { try box.launched(sourceRoot) }
+}
+
+@MainActor private final class MockApplicationTerminator: ApplicationTerminationRequesting {
+    private(set) var calls = 0
+    let box: UpdateServiceBox
+    init(_ box: UpdateServiceBox) { self.box = box }
+    func requestTermination() { calls += 1; box.terminated() }
 }
 
 private func updateFixture(_ name: String = UUID().uuidString) throws -> (URL, URL, URL) {
@@ -108,4 +119,40 @@ private func updateFixture(_ name: String = UUID().uuidString) throws -> (URL, U
     #expect(DevelopmentUpdateAcceptance.isEnabled(arguments: ["DFUUtility", "--update-test"], bundleURL: URL(fileURLWithPath: "/tmp/.build/debug")))
     #expect(!DevelopmentUpdateAcceptance.isEnabled(arguments: ["DFUUtility", "--update-test"], bundleURL: URL(fileURLWithPath: "/Applications/DFUUtility.app")))
     #expect(!DevelopmentUpdateAcceptance.isEnabled(arguments: ["DFUUtility"], bundleURL: URL(fileURLWithPath: "/tmp/.build/debug")))
+}
+
+@MainActor @Test func successfulSpawnDismissesSheetAndRequestsTerminationExactlyOnce() async throws {
+    let (root, _, record) = try updateFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let box = UpdateServiceBox(), terminator = MockApplicationTerminator(box)
+    let available = AppUpdateState.available(.init(currentVersion: "0.6.1", latestVersion: "0.7.0", currentCommit: "a", latestCommit: "b"))
+    box.result = available
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: box), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"))
+    let app = AppModel(updateCoordinator: coordinator, applicationTerminator: terminator, requiresPrivilegedHelperSetup: false)
+    await coordinator.check(manual: true)
+    app.isUpdatePresentationRequested = true
+    #expect(app.prepareUpdate())
+    #expect(box.recordedEvents == ["launch", "terminate"])
+    #expect(terminator.calls == 1); #expect(!app.isUpdatePresentationRequested)
+    #expect(coordinator.state == .preparing)
+}
+
+@MainActor @Test func spawnFailureKeepsAppOpenAndUpdateAvailable() async throws {
+    let (root, _, record) = try updateFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let box = UpdateServiceBox(), terminator = MockApplicationTerminator(box)
+    let available = AppUpdateState.available(.init(currentVersion: "0.6.1", latestVersion: "0.7.0", currentCommit: "a", latestCommit: "b"))
+    box.result = available; box.launchError = UpdateServiceError.launchFailed("fixture")
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: box), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"))
+    let app = AppModel(updateCoordinator: coordinator, applicationTerminator: terminator, requiresPrivilegedHelperSetup: false)
+    await coordinator.check(manual: true); app.isUpdatePresentationRequested = true
+    #expect(!app.prepareUpdate())
+    #expect(terminator.calls == 0); #expect(app.isUpdatePresentationRequested)
+    #expect(coordinator.state == available); #expect(app.presentedError?.contains("fixture") == true)
+}
+
+@MainActor @Test func updateTestSimulationNeverRequestsTermination() async {
+    let box = UpdateServiceBox(), terminator = MockApplicationTerminator(box), coordinator = UpdateCoordinator.simulated()
+    let app = AppModel(updateCoordinator: coordinator, applicationTerminator: terminator, requiresPrivilegedHelperSetup: false, isUpdateTestMode: true)
+    await app.load()
+    #expect(app.prepareUpdate())
+    #expect(terminator.calls == 0); #expect(coordinator.pendingResult?.isSimulation == true)
 }

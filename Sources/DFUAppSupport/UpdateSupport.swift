@@ -55,6 +55,15 @@ public protocol UpdateServicing: Sendable {
     func launch(sourceRoot: URL, oldPID: Int32, appURL: URL, resultURL: URL) throws
 }
 
+@MainActor public protocol ApplicationTerminationRequesting: AnyObject {
+    func requestTermination()
+}
+
+@MainActor public final class NoOpApplicationTerminator: ApplicationTerminationRequesting {
+    public init() {}
+    public func requestTermination() {}
+}
+
 public enum UpdateServiceError: LocalizedError, Equatable {
     case sourceNotRecorded, sourceMissing, updaterMissing, malformedResponse, checkFailed(String), launchFailed(String)
     public var errorDescription: String? {
@@ -178,9 +187,15 @@ public final class UpdateCoordinator: ObservableObject {
     }
 
     public func launchUpdate() throws {
-        let source = try recordedSource(); state = .preparing
-        try service.launch(sourceRoot: source, oldPID: pid, appURL: appURL, resultURL: resultURL)
-        launchSucceeded = true
+        let source = try recordedSource(), previousState = state
+        state = .preparing
+        do {
+            try service.launch(sourceRoot: source, oldPID: pid, appURL: appURL, resultURL: resultURL)
+            launchSucceeded = true
+        } catch {
+            state = previousState
+            throw error
+        }
     }
 
     public func completeSimulation() {

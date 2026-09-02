@@ -14,11 +14,7 @@ struct UpdateView: View {
                 Button("Later") { model.isUpdatePresentationRequested = false }
                 if case .available = model.updateCoordinator.state {
                     Button("Update Now") {
-                        guard model.prepareUpdate() else { return }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            if model.shouldTerminateForUpdate { NSApp.terminate(nil) }
-                            else { model.completeUpdateTest() }
-                        }
+                        _ = model.prepareUpdate()
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!model.canStartUpdate)

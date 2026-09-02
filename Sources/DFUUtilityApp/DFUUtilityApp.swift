@@ -3,6 +3,10 @@ import DFUCore
 import AppKit
 import SwiftUI
 
+@MainActor private final class AppKitApplicationTerminator: ApplicationTerminationRequesting {
+    func requestTermination() { NSApplication.shared.terminate(nil) }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -95,13 +99,13 @@ struct DFUUtilityApplication: App {
             let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Demo-Cache"))
             let scenario = CommandLine.arguments.firstIndex(of: "--screenshot").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil }
             _model = StateObject(wrappedValue: AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: cache, diagnostics: DemoDiagnostics(), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), isDemoMode: true, screenshotScenario: scenario))
-        } else { _model = StateObject(wrappedValue: AppModel(targetDiscoveryAttempts: 3)) }
+        } else { _model = StateObject(wrappedValue: AppModel(applicationTerminator: AppKitApplicationTerminator(), targetDiscoveryAttempts: 3)) }
         #else
         if demo {
             let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Demo-Cache"))
             let scenario = CommandLine.arguments.firstIndex(of: "--screenshot").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil }
             _model = StateObject(wrappedValue: AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: cache, diagnostics: DemoDiagnostics(), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), isDemoMode: true, screenshotScenario: scenario))
-        } else { _model = StateObject(wrappedValue: AppModel(targetDiscoveryAttempts: 3)) }
+        } else { _model = StateObject(wrappedValue: AppModel(applicationTerminator: AppKitApplicationTerminator(), targetDiscoveryAttempts: 3)) }
         #endif
     }
 

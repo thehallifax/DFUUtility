@@ -205,6 +205,7 @@ public final class AppModel: ObservableObject {
     private let restoreEngine: any RestoreOperating
     private let dfuController: any DFUOperating
     private let operationLogger: any OperationLogging
+    private let applicationTerminator: any ApplicationTerminationRequesting
     private let requiresPrivilegedHelperSetup: Bool
     private let targetDiscoveryAttempts: Int
     private let reconnectAttempts: Int
@@ -217,12 +218,13 @@ public final class AppModel: ObservableObject {
     private var catalogueReleases: [IPSWRelease] = []
     private var validatedCacheEntries: [FirmwareReleaseKey: ManagedIPSWEntry] = [:]
 
-    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), updateCoordinator: UpdateCoordinator? = nil, requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false, isUpdateTestMode: Bool = false, screenshotScenario: String? = nil, targetDiscoveryAttempts: Int = 1, reconnectAttempts: Int = 10, reconnectInterval: Duration = .seconds(2)) {
+    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), updateCoordinator: UpdateCoordinator? = nil, applicationTerminator: (any ApplicationTerminationRequesting)? = nil, requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false, isUpdateTestMode: Bool = false, screenshotScenario: String? = nil, targetDiscoveryAttempts: Int = 1, reconnectAttempts: Int = 10, reconnectInterval: Duration = .seconds(2)) {
         let resolvedMode = privilegeMode ?? (requiresPrivilegedHelperSetup ? PrivilegeModeSelector.select() : .community)
         let sessionManager = DeviceSessionManager()
         self.deviceSessions = sessionManager
         self.batchCoordinator = BatchCoordinator(sessions: sessionManager, operatorService: DefaultBatchTargetOperator(restore: restoreEngine, discovery: discovery, reconnectAttempts: reconnectAttempts, reconnectInterval: reconnectInterval), logger: operationLogger)
         self.updateCoordinator = updateCoordinator ?? UpdateCoordinator()
+        self.applicationTerminator = applicationTerminator ?? NoOpApplicationTerminator()
         self.ipswService = ipswService; self.discovery = discovery; self.cache = cache; self.validator = validator
         self.diagnostics = diagnostics; self.restoreEngine = restoreEngine
         self.dfuController = dfuController ?? PrivilegedDFUOperator(discovery: discovery, client: resolvedMode == .signedHelper ? PrivilegedDFUClient() : CommunityDFURequest())
@@ -383,12 +385,17 @@ public final class AppModel: ObservableObject {
         isUpdatePresentationRequested = true
         Task { await checkForUpdates() }
     }
-    public var shouldTerminateForUpdate: Bool { !updateCoordinator.isSimulation }
     public func completeUpdateTest() { updateCoordinator.completeSimulation(); isUpdatePresentationRequested = false }
 
     public func prepareUpdate() -> Bool {
         guard canStartUpdate else { presentedError = updateBlockedMessage; return false }
-        do { try updateCoordinator.launchUpdate(); return true }
+        do {
+            try updateCoordinator.launchUpdate()
+            isUpdatePresentationRequested = false
+            if updateCoordinator.isSimulation { completeUpdateTest() }
+            else { applicationTerminator.requestTermination() }
+            return true
+        }
         catch { presentedError = error.localizedDescription; return false }
     }
 
