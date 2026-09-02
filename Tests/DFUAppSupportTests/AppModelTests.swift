@@ -567,8 +567,20 @@ private let noOpLogger = AppMockLogger()
     let app = model(); await app.validateManualIPSW(testURL); #expect(!app.canRestore)
 }
 
-@Test @MainActor func restoreDisabledWithoutValidImage() {
-    let app = model(devices: [DFUDevice(state: .dfu)]); #expect(!app.canRestore)
+@Test @MainActor func restoreDisabledWithoutValidImage() async {
+    let app = model(service: AppMockService(releases: []), devices: [DFUDevice(state: .dfu)]); await app.refreshDiagnosticsAndTarget()
+    #expect(!app.canRestore); #expect(app.restoreUnavailableMessage == "Select firmware before restoring.")
+}
+
+@Test @MainActor func contextualErrorTitlesPreserveKnownOperationContext() {
+    let app = model()
+    app.presentedError = "Restore failed.\nfixture"; #expect(app.presentedErrorTitle == "Restore Failed")
+    app.presentedError = "Revive failed.\nfixture"; #expect(app.presentedErrorTitle == "Revive Failed")
+    app.presentedError = "Administrator authorization was cancelled while entering DFU."; #expect(app.presentedErrorTitle == "DFU Entry Failed")
+    app.presentedError = "Image download failed.\nfixture"; #expect(app.presentedErrorTitle == "Download Failed")
+    app.presentedError = "Unable to load Apple restore images."; #expect(app.presentedErrorTitle == "Firmware Unavailable")
+    app.presentedError = "DFUUtility is preparing to update."; #expect(app.presentedErrorTitle == "Update Failed")
+    app.presentedError = "fixture"; #expect(app.presentedErrorTitle == "DFUUtility")
 }
 
 @Test @MainActor func restoreEnabledOnlyForRealDFUAndImage() async {

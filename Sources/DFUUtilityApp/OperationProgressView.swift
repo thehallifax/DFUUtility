@@ -17,10 +17,13 @@ struct OperationProgressView: View {
                 if let fraction = presentation.fraction {
                     HStack(alignment: .firstTextBaseline) {
                         ProgressView(value: fraction).frame(maxWidth: .infinity)
+                            .accessibilityLabel(presentation.stage ?? "Operation progress")
+                            .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
                         Text("\(Int((fraction * 100).rounded()))%").font(.caption.monospacedDigit()).frame(minWidth: 36, alignment: .trailing)
                     }
                 } else {
                     ProgressView().controlSize(.small)
+                        .accessibilityLabel(presentation.stage ?? "Operation in progress")
                 }
                 Text(TargetPresentation.disconnectWarning(for: target)).font(.caption).foregroundStyle(.secondary)
             }
@@ -28,6 +31,7 @@ struct OperationProgressView: View {
             VStack(alignment: .leading, spacing: 7) {
                 if let title = presentation.title { Text(title).font(.headline) }
                 ProgressView(presentation.stage ?? TargetPresentation.restartWaitingText(for: target))
+                    .accessibilityLabel(presentation.stage ?? TargetPresentation.restartWaitingText(for: target))
             }
         case .completed:
             Label(presentation.message ?? "Operation completed successfully.", systemImage: "checkmark.circle.fill").foregroundStyle(.green)

@@ -11,7 +11,7 @@ struct UpdateView: View {
             content
             HStack {
                 Spacer()
-                Button("Later") { model.isUpdatePresentationRequested = false }
+                Button("Later") { model.isUpdatePresentationRequested = false }.keyboardShortcut(.cancelAction)
                 if case .available = model.updateCoordinator.state {
                     Button("Update Now") {
                         _ = model.prepareUpdate()
@@ -21,7 +21,7 @@ struct UpdateView: View {
                 }
             }
         }
-        .padding(24).frame(width: 460)
+        .padding(24).frame(minWidth: 360, idealWidth: 460, maxWidth: 560)
     }
 
     private var title: String {
@@ -37,7 +37,7 @@ struct UpdateView: View {
 
     @ViewBuilder private var content: some View {
         switch model.updateCoordinator.state {
-        case .checking, .preparing: ProgressView()
+        case .checking, .preparing: ProgressView().accessibilityLabel(title)
         case .current: Text("DFUUtility is up to date.")
         case .available(let update):
             Text(update.versionChanged ? "A newer version of DFUUtility is available." : "A newer DFUUtility source revision is available.")

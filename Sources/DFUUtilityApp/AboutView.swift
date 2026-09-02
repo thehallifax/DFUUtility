@@ -2,6 +2,7 @@ import DFUCore
 import SwiftUI
 
 struct AboutView: View {
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("DFUUtility").font(.largeTitle.bold())
@@ -14,6 +15,7 @@ struct AboutView: View {
             Link("Upstream project", destination: URL(string: "https://github.com/AsahiLinux/macvdmtool")!)
             ScrollView { Text(licenseText).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
             Spacer()
+            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
         }
     }
     private var licenseText: String {

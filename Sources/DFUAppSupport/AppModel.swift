@@ -359,10 +359,31 @@ public final class AppModel: ObservableObject {
         return RestoreTargetStatePolicy.allowsRestore(target) && imageURL != nil && selectedImageMatchesTarget && !operationInProgress
     }
     public var restoreUnavailableMessage: String {
-        if let target, (target.family == .iPhone || target.family == .iPad), !RestoreTargetStatePolicy.allowsRestore(target) {
+        guard let target else { return "Select a connected target device before restoring." }
+        if (target.family == .iPhone || target.family == .iPad), !RestoreTargetStatePolicy.allowsRestore(target) {
             return "Restore requires the \(target.family.displayName) to be in Recovery or DFU mode."
         }
-        return "Restore requires a compatible validated image and a positively detected supported target."
+        if !RestoreTargetStatePolicy.allowsRestore(target) { return "Restore requires the Mac to be in DFU mode." }
+        if operationInProgress { return "Wait for the current device operation to finish before restoring." }
+        switch imageState {
+        case .validating: return "Wait for firmware validation to finish before restoring."
+        case .partial: return "Resume and complete the firmware download before restoring."
+        case .invalid(let reason): return "The selected firmware is invalid. \(reason)"
+        case .none where selectedRelease == nil && manualImageURL == nil: return "Select firmware before restoring."
+        case .none: return "Download and validate the selected firmware before restoring."
+        case .ready where !selectedImageMatchesTarget: return "The selected firmware is not compatible with \(target.restoreProductType ?? "this target")."
+        case .ready: return "Restore is unavailable for the selected target and firmware."
+        }
+    }
+    public var presentedErrorTitle: String {
+        guard let message = presentedError else { return "DFUUtility" }
+        if message.hasPrefix("Restore failed") { return "Restore Failed" }
+        if message.hasPrefix("Revive failed") { return "Revive Failed" }
+        if message.hasPrefix("Image download failed") { return "Download Failed" }
+        if message.hasPrefix("Unable to load Apple restore images") || message.hasPrefix("The selected IPSW") { return "Firmware Unavailable" }
+        if message.localizedCaseInsensitiveContains("update") { return "Update Failed" }
+        if message.localizedCaseInsensitiveContains("entering DFU") || message.hasPrefix("DFU helper") || message.localizedCaseInsensitiveContains("DFU is unavailable") { return "DFU Entry Failed" }
+        return "DFUUtility"
     }
     public var canRevive: Bool {
         guard !isDemoMode, !isUpdateTestMode, let target, !operationInProgress else { return false }

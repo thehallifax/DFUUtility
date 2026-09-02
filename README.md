@@ -39,7 +39,8 @@ Version 0.6.1 is a focused patch release improving post-operation state recovery
 
 - Multiple connected devices are represented as independent sessions keyed by ECID where available, with UDID/serial used only to preserve non-destructive presentation state when ECID is unavailable.
 - A device without ECID, UDID, or serial receives a new ephemeral session on rediscovery so another physical device cannot inherit its firmware or operation state; it remains unavailable for batch execution until an ECID is present.
-- Batch Restore, Revive, and Restart freeze an explicit checkbox selection and run sequentially; every cfgutil command remains targeted to one ECID.
+- Use the checkboxes to build an explicit batch; **Select All Restore-Ready** selects only devices that currently satisfy Restore eligibility. Firmware remains assigned per device.
+- Batch Restore, Revive, and Restart freeze the selected devices and firmware assignments, then run sequentially; every cfgutil command remains targeted to one ECID and destructive operations are never run in parallel.
 - Firmware selection, validation, progress, reconnect verification, results, and logs remain per device. A failure is recorded and the next queued device continues; **Stop After Current Device** prevents new operations from starting without interrupting the active restore.
 - Automatic Mac Enter DFU remains single-target because upstream `macvdmtool dfu` does not provide an unambiguous target selector.
 
@@ -141,6 +142,8 @@ If an older Lightning device repeatedly lands in Recovery with direct USB-C to L
 
 Managed downloads live under `~/Library/Caches/DFUUtility/IPSW/`, separated by platform. **Manage Downloads…** shows total storage, validation state and failure detail, and offers Reveal, Resume, and confirmed Remove actions. Operation logs live under `~/Library/Logs/DFUUtility/` and are available through **View Log**.
 
+**Diagnostics…** shows detailed local information for troubleshooting. **Copy Sanitized Diagnostics** and **Save Sanitized Diagnostics…** create a shareable report that omits full device identifiers, usernames, and local filesystem paths.
+
 ## CLI
 
 ```sh
@@ -182,4 +185,3 @@ DFUUtility is licensed under the [Apache License 2.0](LICENSE).
 ## Third-party software
 
 DFUUtility bundles upstream [Asahi Linux macvdmtool](https://github.com/AsahiLinux/macvdmtool) at commit `b22ae51eb43a0e1daa21d41616ac899f28e7bf8a`. macvdmtool remains Copyright 2021 The Asahi Linux Contributors and Apache-2.0 licensed; DFUUtility does not claim ownership or relicense it. Its upstream source, attribution, [license](Vendor/macvdmtool/LICENSE), and [revision record](Vendor/macvdmtool/UPSTREAM_REVISION) are preserved and included in packaged apps.
-
