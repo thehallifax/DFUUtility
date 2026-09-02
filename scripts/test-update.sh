@@ -30,8 +30,9 @@ new_fixture() {
   mkdir -p "$seed/Config" "$seed/scripts"
   printf '%s\n' 'MARKETING_VERSION=0.6.1' > "$seed/Config/Version.env"
   cp "$root/scripts/update.sh" "$seed/scripts/update.sh"
+  cp "$root/scripts/update-and-relaunch.sh" "$seed/scripts/update-and-relaunch.sh"
   printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" > "$DFUUTILITY_TEST_INSTALL_LOG"' 'exit "${DFUUTILITY_TEST_INSTALL_STATUS:-0}"' > "$seed/scripts/install-local.sh"
-  chmod +x "$seed/scripts/update.sh" "$seed/scripts/install-local.sh"
+  chmod +x "$seed/scripts/update.sh" "$seed/scripts/update-and-relaunch.sh" "$seed/scripts/install-local.sh"
   git -C "$seed" add .
   git -C "$seed" commit -q -m initial
   git -C "$seed" remote add origin "$remote"
@@ -114,6 +115,20 @@ advance_remote 0.7.0 update
 run_update --check
 expect_status 0; expect_head "$initial_head"; expect_no_file "$install_log"; expect_output "Update available: 0.7.0"
 
+new_fixture machine-current
+run_update --check --machine-readable
+expect_status 0; expect_output "status=current"; expect_output "current_version=0.6.1"; expect_no_file "$install_log"
+
+new_fixture machine-available
+advance_remote 0.6.1 source-only
+run_update --machine-readable
+expect_status 0; expect_output "status=update_available"; expect_output "current_version=0.6.1"; expect_output "latest_version=0.6.1"; expect_head "$initial_head"; expect_no_file "$install_log"
+
+new_fixture machine-dirty
+printf '%s\n' dirty > "$checkout/untracked.txt"
+run_update --machine-readable
+[ "$status" -ne 0 ] || fail "$case_name: dirty checkout succeeded"; expect_output "status=dirty_worktree"
+
 new_fixture test-flag
 advance_remote 0.7.0 update
 run_update --test
@@ -133,6 +148,18 @@ new_fixture wrong-origin
 git -C "$checkout" remote set-url origin https://example.invalid/not-dfuutility.git
 run_update
 [ "$status" -ne 0 ] || fail "$case_name: unexpected origin succeeded"; expect_head "$initial_head"; expect_no_file "$install_log"; expect_output "does not point to the expected repository"
+
+case_name=detached-launcher
+case_root="$suite/$case_name"; source_root="$case_root/source with spaces"; bin="$case_root/bin"; output="$case_root/output.log"
+mkdir -p "$source_root/scripts" "$source_root/Config" "$bin"
+printf '%s\n' 'MARKETING_VERSION=0.6.1' > "$source_root/Config/Version.env"
+printf '%s\n' '#!/bin/sh' 'echo delegated > "$DFUUTILITY_LAUNCH_TEST"' 'exit 0' > "$source_root/scripts/update.sh"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$bin/open"
+printf '%s\n' '#!/bin/sh' 'echo synthetic-commit' > "$bin/git"
+chmod +x "$source_root/scripts/update.sh" "$bin/open" "$bin/git"
+result="$case_root/result"; delegated="$case_root/delegated"
+status=0; PATH="$bin:$PATH" DFUUTILITY_LAUNCH_TEST="$delegated" "$root/scripts/update-and-relaunch.sh" "$source_root" 999999 "/Applications/DFUUtility.app" "$result" >"$output" 2>&1 || status=$?
+expect_status 0; expect_file "$delegated"; expect_file "$result"; grep -Fq 'status=success' "$result" || fail "$case_name: success result missing"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures updater test(s) failed." >&2

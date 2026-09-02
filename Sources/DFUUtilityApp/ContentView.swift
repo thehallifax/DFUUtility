@@ -26,8 +26,15 @@ struct ContentView: View {
                 Text("DFUUtility").font(.largeTitle.bold())
                 Spacer()
                 if model.isDemoMode { Text("DEMO MODE — NO HARDWARE ACTIONS").font(.caption.bold()).foregroundStyle(.orange).padding(7).background(.orange.opacity(0.12), in: Capsule()) }
+                if model.isUpdateTestMode { Text("UPDATE TEST — SIMULATION ONLY").font(.caption.bold()).foregroundStyle(.orange).padding(7).background(.orange.opacity(0.12), in: Capsule()) }
+                if case .available = model.updateCoordinator.state {
+                    Button("Update Available") { model.isUpdatePresentationRequested = true }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                }
                 Button("Diagnostics…") { showDiagnostics = true }
                 Button("About…") { showAbout = true }
+                Button(checkButtonTitle) { model.requestManualUpdateCheck() }
+                    .disabled(model.isDemoMode || model.isScreenshotPresentation || model.updateCoordinator.state == .checking)
             }
             targetCard
             Divider()
@@ -40,6 +47,7 @@ struct ContentView: View {
         .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails).frame(minWidth: 480, minHeight: 430).padding() }
         .sheet(isPresented: $showAbout) { AboutView().frame(minWidth: 520, minHeight: 420).padding() }
         .sheet(isPresented: $showCacheManager) { CacheManagerView(model: model, isPresented: $showCacheManager) }
+        .sheet(isPresented: $model.isUpdatePresentationRequested) { UpdateView(model: model) }
         .sheet(isPresented: $showMobileDFU, onDismiss: { model.dismissMobileDFUAssistant() }) {
             if let assistant = model.mobileDFUAssistant { MobileDFUAssistantView(model: assistant, isPresented: $showMobileDFU) }
         }
@@ -53,6 +61,23 @@ struct ContentView: View {
             Text("\(model.target?.friendlyName ?? "Target device")\nProduct: \(model.target?.restoreProductType ?? "Unknown")\nECID: \(model.target?.ecid ?? "Unknown")\n\(model.selectedRelease?.platform.displayName ?? "OS") \(model.selectedRelease?.version ?? "selected image") (\(model.selectedRelease?.build ?? "unknown build"))\n\nThis will erase the target device and reinstall its operating system.")
         }
         .alert("DFUUtility", isPresented: Binding(get: { model.presentedError != nil }, set: { if !$0 { model.presentedError = nil } })) { Button("OK") { model.presentedError = nil } } message: { Text(model.presentedError ?? "") }
+        .alert(updateResultTitle, isPresented: Binding(get: { model.updateCoordinator.pendingResult != nil }, set: { if !$0 { model.updateCoordinator.clearResult() } })) {
+            if model.updateCoordinator.pendingResult?.outcome == .failure { Button("View Update Log") { NSWorkspace.shared.open(model.updateCoordinator.logURL) } }
+            Button("OK") { model.updateCoordinator.clearResult() }
+        } message: {
+            if let result = model.updateCoordinator.pendingResult {
+                if result.isSimulation { Text("The in-app update workflow completed successfully in simulation.") }
+                else if result.outcome == .failure { Text("DFUUtility could not be updated. The previously installed application remains available.") }
+                else if let old = result.oldVersion, let new = result.newVersion, old != new { Text("Updated successfully to \(new).") }
+                else { Text("DFUUtility was updated successfully. Version remains \(result.newVersion ?? result.oldVersion ?? "unchanged").") }
+            }
+        }
+    }
+
+    private var checkButtonTitle: String { model.updateCoordinator.state == .checking ? "Checking…" : "Check for Updates…" }
+    private var updateResultTitle: String {
+        if model.updateCoordinator.pendingResult?.isSimulation == true { return "Update Test Completed" }
+        return model.updateCoordinator.pendingResult?.outcome == .failure ? "Update Failed" : "DFUUtility Updated"
     }
 
     private var targetCard: some View {

@@ -76,6 +76,10 @@ install_app() {
     printf '%s\n' "$backup" > "$backup_record"
   fi
   if ! mv "$stage" "$destination"; then
+    if [ -s "$backup_record" ] && [ ! -e "$destination" ]; then
+      backup=$(cat "$backup_record")
+      if mv "$backup" "$destination"; then : > "$backup_record"; else echo "The previous application could not be restored automatically from: $backup" >&2; fi
+    fi
     echo "Could not write to /Applications. Install the verified app manually from: $source_app" >&2
     return 1
   fi
@@ -91,6 +95,11 @@ if [ "$run_tests" -eq 1 ]; then run_step "Running tests" tests run_tests_step; f
 run_step "Packaging app" package package_app
 run_step "Verifying app" verify verify_app
 run_step "Installing app" install install_app
+
+support_dir="$HOME/Library/Application Support/DFUUtility"
+mkdir -p "$support_dir"
+printf '%s\n' "$root" > "$support_dir/update-source"
+chmod 600 "$support_dir/update-source"
 
 if [ -s "$backup_record" ]; then
   echo

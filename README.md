@@ -92,7 +92,11 @@ scripts/install-local.sh --test --verbose
 
 ### Updating
 
-If DFUUtility was installed from a normal Git clone, update it from that source folder:
+DFUUtility normally performs a lightweight daily check for newer Community source after launch. It never installs automatically. Choose **DFUUtility → Check for Updates…** to perform a fresh check; **Update Now** quits the running app, safely fast-forwards its original Git clone, rebuilds and verifies the app locally, installs it, and relaunches it. The original checkout must still exist, remain on `main`, and have no local changes.
+
+The installer records the canonical source location in the user's DFUUtility application-support folder; no developer path is embedded in the app. Update progress and failures are recorded in `~/Library/Logs/DFUUtility/update.log`. A failed build or verification leaves the existing installed app available.
+
+Manual updating remains available as a fallback:
 
 ```sh
 cd /path/to/DFUUtility
@@ -107,7 +111,7 @@ scripts/update.sh --verbose  # Show complete installer output
 scripts/update.sh --test     # Run the repository tests before installation
 ```
 
-The flags may be combined. Automatic updates are intended for clean end-user clones. Contributors with local changes or feature branches should manage their Git checkout manually; the updater never stashes, resets, cleans, switches branches, or discards work.
+The flags may be combined. In-app and shell updates are intended for clean end-user clones. Contributors with local changes or feature branches should manage their Git checkout manually; the updater never stashes, resets, cleans, switches branches, or discards work.
 
 ## Usage
 

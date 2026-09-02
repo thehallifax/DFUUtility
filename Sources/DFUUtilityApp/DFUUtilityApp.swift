@@ -86,11 +86,23 @@ struct DFUUtilityApplication: App {
             catch { FileHandle.standardError.write(Data("Failed to unregister privileged helper: \(error.localizedDescription)\n".utf8)); exit(1) }
         }
         let demo = ProcessInfo.processInfo.environment["DFUUTILITY_DEMO"] == "1" || CommandLine.arguments.contains("--demo")
+        #if DEBUG
+        let updateTest = DevelopmentUpdateAcceptance.isEnabled(arguments: CommandLine.arguments, bundleURL: Bundle.main.bundleURL)
+        if updateTest {
+            let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Update-Test-Cache"))
+            _model = StateObject(wrappedValue: AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: cache, diagnostics: DemoDiagnostics(), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), updateCoordinator: .simulated(), requiresPrivilegedHelperSetup: false, isUpdateTestMode: true))
+        } else if demo {
+            let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Demo-Cache"))
+            let scenario = CommandLine.arguments.firstIndex(of: "--screenshot").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil }
+            _model = StateObject(wrappedValue: AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: cache, diagnostics: DemoDiagnostics(), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), isDemoMode: true, screenshotScenario: scenario))
+        } else { _model = StateObject(wrappedValue: AppModel(targetDiscoveryAttempts: 3)) }
+        #else
         if demo {
             let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Demo-Cache"))
             let scenario = CommandLine.arguments.firstIndex(of: "--screenshot").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil }
             _model = StateObject(wrappedValue: AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: cache, diagnostics: DemoDiagnostics(), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), isDemoMode: true, screenshotScenario: scenario))
         } else { _model = StateObject(wrappedValue: AppModel(targetDiscoveryAttempts: 3)) }
+        #endif
     }
 
     var body: some Scene {
@@ -98,6 +110,12 @@ struct DFUUtilityApplication: App {
         WindowGroup("DFUUtility") { ContentView(model: model).frame(minWidth: window.minimumWidth, minHeight: window.minimumHeight) }
             .defaultSize(width: window.defaultWidth, height: window.defaultHeight)
             .windowResizability(.contentMinSize)
+            .commands {
+                CommandGroup(after: .appInfo) {
+                    Button("Check for Updates…") { model.requestManualUpdateCheck() }
+                        .disabled(model.isDemoMode || model.isScreenshotPresentation)
+                }
+            }
         Settings { DiagnosticsView(report: model.doctorReport, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails) }
     }
 }

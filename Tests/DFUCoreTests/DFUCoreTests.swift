@@ -663,6 +663,7 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     #expect(text.contains("Mac DFU entry may request administrator authorization")); #expect(text.contains("iPhone/iPad DFU uses guided physical-button instructions"))
     #expect(text.contains("Previous app moved to Trash:")); #expect(text.contains("Open Applications → DFUUtility"))
     #expect(text.contains("To update DFUUtility later:")); #expect(text.contains("scripts/update.sh"))
+    #expect(text.contains("Library/Application Support/DFUUtility")); #expect(text.contains("update-source")); #expect(text.contains("chmod 600"))
 }
 
 @Test func updaterShellSafetyMatrix() throws {
@@ -678,6 +679,14 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
     let text = String(decoding: data, as: UTF8.self)
     #expect(process.terminationStatus == 0)
     #expect(text.contains("Updater shell tests passed."))
+}
+
+@Test func mainWindowAndApplicationMenuShareManualUpdateAction() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let content = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/ContentView.swift"), encoding: .utf8)
+    let application = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/DFUUtilityApp.swift"), encoding: .utf8)
+    #expect(content.contains("Button(checkButtonTitle) { model.requestManualUpdateCheck() }"))
+    #expect(application.contains("Button(\"Check for Updates…\") { model.requestManualUpdateCheck() }"))
 }
 
 private func releaseLibrary(_ command: String) throws -> (Int32, String) {

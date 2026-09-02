@@ -59,10 +59,10 @@ if [ "$version" != unknown ] && grep -Fq "public static let version = \"$version
 else fail "Generated metadata" "generated Swift metadata disagrees with Config/Version.env"
 fi
 
-if [ -x scripts/update.sh ] && sh -n scripts/update.sh && grep -Fq "scripts/update.sh" README.md; then
-  pass "Updater" "executable, syntax valid, documented"
+if [ -x scripts/update.sh ] && [ -x scripts/update-and-relaunch.sh ] && [ -x scripts/test-update.sh ] && sh -n scripts/update.sh && sh -n scripts/update-and-relaunch.sh && sh -n scripts/install-local.sh && sh -n scripts/test-update.sh && grep -Fq "Check for Updates" README.md && grep -Fq "scripts/update.sh" README.md && grep -Fq 'install -m 755 scripts/update-and-relaunch.sh' scripts/package-app.sh && ! grep -Fq '/Users/james' scripts/update-and-relaunch.sh; then
+  pass "Updater" "scripts executable, syntax valid, launcher bundled, documented"
 else
-  fail "Updater" "scripts/update.sh must be executable, syntax valid, and documented in README"
+  fail "Updater" "update scripts must be executable, syntax valid, safely bundled, and documented"
 fi
 
 run_stage debug-build "Debug build" swift build || true

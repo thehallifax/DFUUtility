@@ -12,6 +12,17 @@ private func browsingReleases() -> [IPSWRelease] {
         IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "PAD", downloadURL: URL(string: "https://updates.cdn-apple.com/pad.ipsw")!, supportedDevices: ["iPad13,18"])
     ]
 }
+
+@MainActor @Test func updateTestModeIsHardwareInertAndExposesFictionalUpdate() async {
+    let discovery = CountingAppDiscovery([DFUDevice(state: .dfu, model: "Mac14,2", ecid: "SHOULD-NOT-APPEAR")])
+    let restore = CountingRestore(), coordinator = UpdateCoordinator.simulated()
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: restore, dfuController: AppMockDFU(), operationLogger: noOpLogger, updateCoordinator: coordinator, requiresPrivilegedHelperSetup: false, isUpdateTestMode: true)
+    await app.load()
+    #expect(discovery.callCount == 0); #expect(restore.callCount == 0); #expect(app.targetDevices.isEmpty)
+    #expect(!app.canEnterDFU); #expect(!app.canRestore); #expect(!app.canRevive)
+    #expect(app.isUpdatePresentationRequested)
+    #expect(coordinator.state == .available(SimulatedUpdateService.availability))
+}
 private func tempCache() -> IPSWCache { IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)) }
 private func addValidatedCacheFixture(_ release: IPSWRelease, to cache: IPSWCache, bytes: Int = 17) throws -> URL {
     let partial = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".ipsw")

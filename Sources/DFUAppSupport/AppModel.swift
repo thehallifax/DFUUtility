@@ -187,10 +187,13 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var mobileDFUAssistant: MobileDFUAssistantModel?
     @Published public private(set) var managedCacheEntries: [ManagedIPSWEntry] = []
     @Published public private(set) var browsePlatform: RestorePlatform = .macOS
+    @Published public var isUpdatePresentationRequested = false
 
     public let isDemoMode: Bool
+    public let isUpdateTestMode: Bool
     public let deviceSessions: DeviceSessionManager
     public let batchCoordinator: BatchCoordinator
+    public let updateCoordinator: UpdateCoordinator
     public var isScreenshotPresentation: Bool { screenshotScenario != nil }
     public let privilegeMode: PrivilegeMode
     private let screenshotScenario: String?
@@ -214,17 +217,19 @@ public final class AppModel: ObservableObject {
     private var catalogueReleases: [IPSWRelease] = []
     private var validatedCacheEntries: [FirmwareReleaseKey: ManagedIPSWEntry] = [:]
 
-    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false, screenshotScenario: String? = nil, targetDiscoveryAttempts: Int = 1, reconnectAttempts: Int = 10, reconnectInterval: Duration = .seconds(2)) {
+    public init(ipswService: any IPSWService = AppleIPSWService(), discovery: any DeviceDiscovering = ConfiguratorDeviceDiscovery(), cache: IPSWCache = IPSWCache(), validator: any IPSWValidating = IPSWValidator(), diagnostics: any DiagnosticsProviding = DoctorService(), restoreEngine: any RestoreOperating = RestoreEngine(), dfuController: (any DFUOperating)? = nil, operationLogger: any OperationLogging = OperationLogger(), updateCoordinator: UpdateCoordinator? = nil, requiresPrivilegedHelperSetup: Bool = true, privilegeMode: PrivilegeMode? = nil, isDemoMode: Bool = false, isUpdateTestMode: Bool = false, screenshotScenario: String? = nil, targetDiscoveryAttempts: Int = 1, reconnectAttempts: Int = 10, reconnectInterval: Duration = .seconds(2)) {
         let resolvedMode = privilegeMode ?? (requiresPrivilegedHelperSetup ? PrivilegeModeSelector.select() : .community)
         let sessionManager = DeviceSessionManager()
         self.deviceSessions = sessionManager
         self.batchCoordinator = BatchCoordinator(sessions: sessionManager, operatorService: DefaultBatchTargetOperator(restore: restoreEngine, discovery: discovery, reconnectAttempts: reconnectAttempts, reconnectInterval: reconnectInterval), logger: operationLogger)
+        self.updateCoordinator = updateCoordinator ?? UpdateCoordinator()
         self.ipswService = ipswService; self.discovery = discovery; self.cache = cache; self.validator = validator
         self.diagnostics = diagnostics; self.restoreEngine = restoreEngine
         self.dfuController = dfuController ?? PrivilegedDFUOperator(discovery: discovery, client: resolvedMode == .signedHelper ? PrivilegedDFUClient() : CommunityDFURequest())
-        self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = resolvedMode == .signedHelper; self.privilegeMode = resolvedMode; self.isDemoMode = isDemoMode; self.screenshotScenario = screenshotScenario; self.targetDiscoveryAttempts = max(1, targetDiscoveryAttempts); self.reconnectAttempts = max(1, reconnectAttempts); self.reconnectInterval = reconnectInterval
+        self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = resolvedMode == .signedHelper; self.privilegeMode = resolvedMode; self.isDemoMode = isDemoMode; self.isUpdateTestMode = isUpdateTestMode; self.screenshotScenario = screenshotScenario; self.targetDiscoveryAttempts = max(1, targetDiscoveryAttempts); self.reconnectAttempts = max(1, reconnectAttempts); self.reconnectInterval = reconnectInterval
         sessionManager.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         batchCoordinator.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
+        self.updateCoordinator.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
     }
 
     public var target: DFUDevice? {
@@ -293,13 +298,22 @@ public final class AppModel: ObservableObject {
     public func cacheRevealURL(for entry: ManagedIPSWEntry) -> URL { entry.url }
     public func prepareCacheDirectoryForReveal() -> URL? { do { try cache.prepare(); return cache.directory } catch { presentedError = "Unable to open the IPSW cache.\n\(error.localizedDescription)"; return nil } }
     public var operationInProgress: Bool {
+        if case .preparing = updateCoordinator.state { return true }
         if batchCoordinator.isRunning { return true }
         if case .running = restoreState { return true }
         if case .reconnecting = restoreState { return true }
         return false
     }
+    public var canStartUpdate: Bool {
+        guard !isDemoMode, !isScreenshotPresentation else { return false }
+        let downloading: Bool = if case .downloading = downloadState { true } else { false }
+        let validating: Bool = if case .validating = downloadState { true } else if case .validating = imageState { true } else { false }
+        return UpdateOperationSnapshot(restoreOrReconnect: operationInProgress, download: downloading, validation: validating, guidedDFU: mobileDFUAssistant?.isMonitoring == true, batch: batchCoordinator.isRunning).permitsUpdate
+    }
+    public var updateBlockedMessage: String { "Finish the current DFUUtility operation before updating." }
+    private var updateLaunchInProgress: Bool { if case .preparing = updateCoordinator.state { true } else { false } }
     public var reconnectInProgress: Bool { if case .reconnecting = restoreState { true } else { false } }
-    public var canEnterDFU: Bool { !isDemoMode && targetDevices.count == 1 && target?.family == .mac && target?.state == .normal && !hasSyntheticProductionIdentity && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && !operationInProgress }
+    public var canEnterDFU: Bool { !isDemoMode && !isUpdateTestMode && targetDevices.count == 1 && target?.family == .mac && target?.state == .normal && !hasSyntheticProductionIdentity && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && !operationInProgress }
     public var macDFUMultiTargetUnavailable: Bool { targetDevices.count > 1 && targetDevices.contains { $0.family == .mac && $0.state == .normal } }
     public var canUseMobileDFUAssistant: Bool {
         guard let target, target.family == .iPhone || target.family == .iPad, target.state == .normal || target.state == .recovery else { return false }
@@ -325,7 +339,7 @@ public final class AppModel: ObservableObject {
         return value == "TEST" || value.hasPrefix("DEMO") || value.hasPrefix("TEST-")
     }
     public var canRestore: Bool {
-        guard !isDemoMode, let target else { return false }
+        guard !isDemoMode, !isUpdateTestMode, let target else { return false }
         return RestoreTargetStatePolicy.allowsRestore(target) && imageURL != nil && selectedImageMatchesTarget && !operationInProgress
     }
     public var restoreUnavailableMessage: String {
@@ -335,7 +349,7 @@ public final class AppModel: ObservableObject {
         return "Restore requires a compatible validated image and a positively detected supported target."
     }
     public var canRevive: Bool {
-        guard !isDemoMode, let target, !operationInProgress else { return false }
+        guard !isDemoMode, !isUpdateTestMode, let target, !operationInProgress else { return false }
         return target.family == .mac ? (target.state == .dfu || target.state == .recovery) : target.state == .recovery
     }
     private var selectedImageMatchesTarget: Bool {
@@ -344,11 +358,38 @@ public final class AppModel: ObservableObject {
     }
 
     public func load() async {
+        if isUpdateTestMode {
+            targetDevices = []; selectedTargetECID = nil
+            await updateCoordinator.check(manual: true)
+            isUpdatePresentationRequested = true
+            return
+        }
         if let screenshotScenario { configureScreenshot(screenshotScenario); return }
         if isDemoMode { deviceSessions.configureDemo(); await refreshCatalogue(); return }
         await refreshDiagnosticsAndTarget()
         if catalogueState == .idle { await refreshCatalogue() }
         await refreshManagedCache()
+        updateCoordinator.consumeResult()
+        Task { await updateCoordinator.automaticCheckIfDue(disabled: isDemoMode || isScreenshotPresentation) }
+    }
+
+    public func checkForUpdates(manual: Bool = true) async {
+        guard !isDemoMode, !isScreenshotPresentation else { return }
+        await updateCoordinator.check(manual: manual)
+    }
+
+    public func requestManualUpdateCheck() {
+        guard !isDemoMode, !isScreenshotPresentation else { return }
+        isUpdatePresentationRequested = true
+        Task { await checkForUpdates() }
+    }
+    public var shouldTerminateForUpdate: Bool { !updateCoordinator.isSimulation }
+    public func completeUpdateTest() { updateCoordinator.completeSimulation(); isUpdatePresentationRequested = false }
+
+    public func prepareUpdate() -> Bool {
+        guard canStartUpdate else { presentedError = updateBlockedMessage; return false }
+        do { try updateCoordinator.launchUpdate(); return true }
+        catch { presentedError = error.localizedDescription; return false }
     }
 
     private func configureScreenshot(_ scenario: String) {
@@ -524,6 +565,7 @@ public final class AppModel: ObservableObject {
         startBatch(.restore)
     }
     public func startBatch(_ kind: BatchOperationKind) {
+        guard !updateLaunchInProgress else { presentedError = "DFUUtility is preparing to update."; return }
         guard !isDemoMode else { presentedError = "Demo mode cannot execute device operations."; return }
         batchCoordinator.start(kind)
         guard batchCoordinator.isRunning else { return }
@@ -595,6 +637,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func beginDownload() {
+        guard !updateLaunchInProgress else { presentedError = "DFUUtility is preparing to update."; return }
         guard downloadTask == nil else { return }
         downloadTask = Task { [weak self] in await self?.downloadSelected(); self?.downloadTask = nil }
     }
