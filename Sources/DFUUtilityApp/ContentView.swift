@@ -104,7 +104,7 @@ struct ContentView: View {
                     EmptyView()
                 }
                 if model.macDFUMultiTargetUnavailable { Text("Automatic Mac Enter DFU is available only when exactly one target is connected because macvdmtool cannot select a specific Mac.").font(.caption).foregroundStyle(.orange) }
-                if model.doctorReport?.status.host.macVDMToolPath == nil { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
+                if model.shouldShowMissingDFUHelperWarning { Text("The bundled DFU helper is unavailable. Rebuild the application or view Diagnostics.").font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label("Target Device", systemImage: model.target?.family == .mac ? "desktopcomputer" : "iphone") }
     }
@@ -324,15 +324,19 @@ private struct BatchRestoreControls: View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
             Text("Sequential Batch").font(.headline)
-            HStack {
+            HStack(spacing: 8) {
                 Button("Use Latest Compatible Firmware") { Task { await model.useLatestCompatibleFirmwareForSelectedSessions() } }
                 Button("Use Current Firmware for Selected") { model.applyCurrentFirmwareToSelectedSessions() }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            HStack(spacing: 8) {
                 Button("Restore \(sessions.selectedSessions.count) Devices", role: .destructive) { confirming = true }
                     .disabled(!coordinator.canStartRestore || model.isDemoMode)
                 Button("Revive Selected") { model.startBatch(.revive) }.disabled(!coordinator.canStart(.revive) || model.isDemoMode)
                 Button("Restart Selected") { model.startBatch(.restart) }.disabled(!coordinator.canStart(.restart) || model.isDemoMode)
                 if coordinator.isRunning { Button("Stop After Current Device") { model.stopBatchAfterCurrentTarget() } }
             }
+            .fixedSize(horizontal: true, vertical: false)
             if !coordinator.selectedEligibilityFailures(for: .restore).isEmpty {
                 Text("Every selected device must be ready. \(coordinator.selectedEligibilityFailures(for: .restore).count) selected device(s) are blocked for Restore.").font(.caption).foregroundStyle(.orange)
             }

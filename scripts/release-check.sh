@@ -121,10 +121,10 @@ if [ -s LICENSE ] && grep -Fq "Apache License" LICENSE && [ -s "$app/Contents/Re
 if [ -s Vendor/macvdmtool/LICENSE ] && [ -s Vendor/macvdmtool/UPSTREAM_REVISION ] && [ -s Vendor/macvdmtool/README.upstream.md ] && grep -Fq "$vdm_revision" Vendor/macvdmtool/UPSTREAM_REVISION && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt" ] && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt" ]; then pass "Third-party licenses"; else fail "Third-party licenses" "macvdmtool attribution/license/revision incomplete"; fi
 
 screenshots_ok=true
-for screenshot in normal-mac mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
+for screenshot in multiple-devices normal-mac mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
   [ -s "$root/docs/images/$screenshot.png" ] || screenshots_ok=false
 done
-if [ "$screenshots_ok" = true ]; then pass "Release screenshots" "9 deterministic assets"; else fail "Release screenshots" "one or more release screenshots are missing"; fi
+if [ "$screenshots_ok" = true ]; then pass "Release screenshots" "10 deterministic assets"; else fail "Release screenshots" "one or more release screenshots are missing"; fi
 
 artifact="$root/.build/distribution/$(distribution_artifact_name "$version")"
 if [ -f "$artifact" ] && unzip -Z1 "$artifact" >"$log_root/zip-contents.log" 2>&1 && grep -q '^DFUUtility.app/Contents/MacOS/DFUUtility$' "$log_root/zip-contents.log" && grep -q '^DFUUtility.app/Contents/Library/LaunchServices/DFUPrivilegedHelper$' "$log_root/zip-contents.log"; then

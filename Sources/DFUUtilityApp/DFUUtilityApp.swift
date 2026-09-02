@@ -32,12 +32,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             size = NSSize(width: 620, height: 450)
         } else if scenario == "manage-downloads" {
             root = AnyView(CacheManagerView(model: model, isPresented: .constant(true)))
-            size = NSSize(width: 800, height: 600)
+            size = NSSize(width: 800, height: 800)
         } else if scenario == "iphone-guided-dfu" || scenario == "ipad-guided-dfu" {
             guard model.prepareMobileDFUAssistant(), let assistant = model.mobileDFUAssistant else { NSApp.terminate(nil); return }
             assistant.setDemoState(.detectedDFU)
             root = AnyView(MobileDFUAssistantView(model: assistant, isPresented: .constant(true)))
             size = NSSize(width: 700, height: 600)
+        } else if scenario == "multiple-devices" {
+            root = AnyView(ContentView(model: model))
+            size = NSSize(width: 1040, height: 1000)
         } else {
             root = AnyView(ContentView(model: model))
             size = NSSize(width: 900, height: 760)

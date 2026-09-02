@@ -2,7 +2,7 @@
 
 DFUUtility is an open-source native macOS utility for entering supported Macs into DFU mode and restoring or reviving Apple devices with Apple IPSWs.
 
-![DFUUtility with a connected Mac](docs/images/normal-mac.png)
+![DFUUtility multi-device workflow](docs/images/multiple-devices.png)
 
 Version 0.6.1 is a focused patch release improving post-operation state recovery, Mac Enter DFU error handling, and Community installation. Community builds are local and ad-hoc signed; no paid Apple Developer account is required.
 
@@ -49,15 +49,19 @@ Batch execution is intentionally sequential in this first implementation. Parall
 
 | Guided iPhone DFU | Guided iPad DFU |
 | --- | --- |
-| ![iPhone 6 guided DFU](docs/images/iphone-guided-dfu.png) | ![iPad guided DFU](docs/images/ipad-guided-dfu.png) |
+| ![Guided iPhone DFU](docs/images/iphone-guided-dfu.png) | ![Guided iPad DFU](docs/images/ipad-guided-dfu.png) |
 
-| Firmware chooser | Download progress | Restore progress |
-| --- | --- | --- |
-| ![Compatible firmware chooser](docs/images/firmware-chooser.png) | ![Firmware download progress](docs/images/download-progress.png) | ![Structured Restore progress](docs/images/restore-progress.png) |
-
-| Manage Downloads | Completed Restore |
+| Firmware chooser | Manage Downloads |
 | --- | --- |
-| ![Managed firmware cache](docs/images/manage-downloads.png) | ![Completed Restore and returned target](docs/images/completed-restore.png) |
+| ![Compatible firmware chooser](docs/images/firmware-chooser.png) | ![Managed firmware cache](docs/images/manage-downloads.png) |
+
+| Download progress | Restore progress |
+| --- | --- |
+| ![Firmware download progress](docs/images/download-progress.png) | ![Structured Restore progress](docs/images/restore-progress.png) |
+
+| Completed Restore |
+| --- |
+| ![Completed Restore and returned target](docs/images/completed-restore.png) |
 
 All screenshots use deterministic fictional data; they contain no real device or user identifiers.
 

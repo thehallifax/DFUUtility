@@ -317,6 +317,9 @@ public final class AppModel: ObservableObject {
     public var targetRestorePlatform: RestorePlatform { target?.family.restorePlatform ?? browsePlatform }
     public var restoreSectionTitle: String { isFirmwareLibraryMode ? "Firmware Library" : "\(targetRestorePlatform.displayName) Restore" }
     public var manageDownloadsAvailable: Bool { true }
+    public var shouldShowMissingDFUHelperWarning: Bool {
+        !isDemoMode && doctorReport?.status.host.macVDMToolPath == nil
+    }
     private var hasSyntheticProductionIdentity: Bool {
         guard !isDemoMode, let value = target?.ecid?.uppercased() else { return false }
         return value == "TEST" || value.hasPrefix("DEMO") || value.hasPrefix("TEST-")
@@ -349,39 +352,42 @@ public final class AppModel: ObservableObject {
     }
 
     private func configureScreenshot(_ scenario: String) {
-        let macRelease = IPSWRelease(version: "26.6.2", build: "25G83", downloadURL: URL(string: "https://updates.cdn-apple.com/demo-mac.ipsw")!, fileSize: 19_772_231_540, supportedDevices: ["Mac14,2"])
-        let iOSRelease = IPSWRelease(platform: .iOS, version: "12.5.8", build: "16H88", downloadURL: URL(string: "https://updates.cdn-apple.com/demo-ios.ipsw")!, fileSize: 4_321_000_000, supportedDevices: ["iPhone7,2"])
-        let iPadRelease = IPSWRelease(platform: .iPadOS, version: "18.7.10", build: "22H374", downloadURL: URL(string: "https://updates.cdn-apple.com/demo-ipados.ipsw")!, fileSize: 7_860_000_000, supportedDevices: ["iPad7,11"])
-        let release = scenario == "firmware-chooser" ? iPadRelease : (scenario == "download-progress" || scenario == "restore-progress" || scenario == "completed-restore" ? iOSRelease : macRelease)
-        let image = URL(fileURLWithPath: "/demo/(release.build)/Restore.ipsw")
-        availableReleases = [release]; selectedRelease = release; imageState = .ready(image); catalogueState = .loaded
-        imageChoices = [.init(release: release, isRecommended: true, cacheState: .downloaded(image), compatibility: .compatible(model: release.supportedDevices[0]))]
+        let macRelease = DemoFirmwareLibrary.catalogueReleases.first { $0.platform == .macOS }!
+        let latestIOS = DemoFirmwareLibrary.catalogueReleases.first { $0.platform == .iOS }!
+        let cachedIOS = DemoFirmwareLibrary.cachedEntries.first { $0.release.platform == .iOS }!.release
         doctorReport = DoctorReport(status: UtilityStatus(host: HostStatus(isAppleSilicon: true, macOSVersion: "26.6.1", macVDMToolPath: URL(fileURLWithPath: "/demo/macvdmtool"), cfgutilPath: URL(fileURLWithPath: "/demo/cfgutil")), targets: []), configuratorPresent: true, cacheDirectory: URL(fileURLWithPath: "/demo/cache"), cacheWritable: true, restoreSupported: true)
         switch scenario {
         case "normal-mac", "normal": targetDevices = [DFUDevice(state: .normal, model: "Mac14,2", ecid: "DEMO-MAC-001")]
         case "mac-dfu", "dfu": targetDevices = [DFUDevice(state: .dfu, model: "Mac14,2", ecid: "DEMO-MAC-001")]
         case "iphone-guided-dfu": targetDevices = [DFUDevice(family: .iPhone, state: .normal, model: "iPhone 6", ecid: "DEMO-PHONE-001", productType: "iPhone7,2")]
-        case "ipad-guided-dfu", "firmware-chooser": targetDevices = [DFUDevice(family: .iPad, state: .normal, model: "iPad (7th generation)", ecid: "DEMO-IPAD-001", productType: "iPad7,11")]
+        case "ipad-guided-dfu": targetDevices = [DFUDevice(family: .iPad, state: .normal, model: "iPad (7th generation)", ecid: "DEMO-IPAD-001", productType: "iPad7,11")]
+        case "firmware-chooser": browsePlatform = .iOS; targetDevices = []
         case "download-progress":
-            targetDevices = [DFUDevice(family: .iPhone, state: .normal, model: "iPhone 6", ecid: "DEMO-PHONE-001", productType: "iPhone7,2")]
-            imageState = .partial(1_850_000_000); downloadState = .downloading(completed: 1_850_000_000, total: 4_321_000_000, bytesPerSecond: 42_600_000)
+            targetDevices = [DFUDevice(family: .iPhone, state: .normal, model: "iPhone 14 Pro", ecid: "DEMO-PHONE-001", productType: "iPhone15,2")]
         case "restore-progress", "progress":
-            targetDevices = [DFUDevice(family: .iPhone, state: .dfu, model: "iPhone 6", ecid: "DEMO-PHONE-001", productType: "iPhone7,2")]
-            restoreState = .running(operation: "Restore", stage: "Installing System", stageIndex: 4, stageTotal: 4, fraction: 0.66)
+            targetDevices = [DFUDevice(family: .iPhone, state: .dfu, model: "iPhone 14 Pro", ecid: "DEMO-PHONE-001", productType: "iPhone15,2")]
         case "completed-restore", "completed":
-            targetDevices = [DFUDevice(family: .iPhone, state: .normal, model: "iPhone 6", ecid: "DEMO-PHONE-001", productType: "iPhone7,2")]
-            restoreState = .completed("Restore completed successfully. Target restarted.")
-        case "manage-downloads":
-            targetDevices = [DFUDevice(state: .normal, model: "Mac14,2", ecid: "DEMO-MAC-001")]
-            managedCacheEntries = [
-                .init(release: macRelease, state: .completeValidated, sizeBytes: macRelease.fileSize!, url: URL(fileURLWithPath: "/demo/cache/25G83/Restore.ipsw")),
-                .init(release: iOSRelease, state: .completeValidated, sizeBytes: iOSRelease.fileSize!, url: URL(fileURLWithPath: "/demo/cache/iOS/16H88/Restore.ipsw")),
-                .init(release: iPadRelease, state: .completeValidated, sizeBytes: iPadRelease.fileSize!, url: URL(fileURLWithPath: "/demo/cache/iPadOS/22H374/Restore.ipsw"))
-            ]
+            targetDevices = [DFUDevice(family: .iPhone, state: .normal, model: "iPhone 14 Pro", ecid: "DEMO-PHONE-001", productType: "iPhone15,2")]
+        case "multiple-devices": targetDevices = []; deviceSessions.configureDemo()
         default: targetDevices = []
         }
+        managedCacheEntries = DemoFirmwareLibrary.cachedEntries
+        validatedCacheEntries = Dictionary(uniqueKeysWithValues: managedCacheEntries.map { (FirmwareReleaseKey($0.release), $0) })
+        catalogueReleases = AppleIPSWService.sortNewestFirst(releasesForCurrentFirmwareContext(DemoFirmwareLibrary.catalogueReleases))
+        rebuildAvailableReleases()
+        if scenario == "download-progress" { selectedRelease = latestIOS }
+        else if scenario == "restore-progress" || scenario == "progress" || scenario == "completed-restore" || scenario == "completed" { selectedRelease = cachedIOS }
+        else { selectedRelease = availableReleases.first ?? macRelease }
+        refreshSelectedCacheState(); refreshImageChoices(); catalogueState = .loaded
+        if scenario == "download-progress" {
+            imageState = .partial(1_850_000_000); downloadState = .downloading(completed: 1_850_000_000, total: latestIOS.fileSize, bytesPerSecond: 42_600_000)
+        } else if scenario == "restore-progress" || scenario == "progress" {
+            restoreState = .running(operation: "Restore", stage: "Installing System", stageIndex: 4, stageTotal: 4, fraction: 0.66)
+        } else if scenario == "completed-restore" || scenario == "completed" {
+            restoreState = .completed("Restore completed successfully. Target restarted.")
+        }
         selectedTargetECID = targetDevices.count == 1 ? targetDevices[0].ecid : nil
-        deviceSessions.reconcile(targetDevices)
+        if scenario != "multiple-devices" { deviceSessions.reconcile(targetDevices) }
     }
 
     public func refreshCatalogue() async {
@@ -625,6 +631,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func cacheRemovalDisabledReason(for entry: ManagedIPSWEntry) -> String? {
+        if isDemoMode { return "Demo firmware is read-only." }
         if case .downloading = downloadState, selectedRelease?.build == entry.release.build && selectedRelease?.platform == entry.release.platform { return "This image is currently downloading." }
         if case .validating = downloadState, selectedRelease?.build == entry.release.build && selectedRelease?.platform == entry.release.platform { return "This image is currently being validated." }
         let operationActive = if case .running = restoreState { true } else if case .reconnecting = restoreState { true } else { false }
@@ -715,6 +722,11 @@ public final class AppModel: ObservableObject {
     }
 
     private func loadManagedCache(knownReleases: [IPSWRelease]) async {
+        if isDemoMode {
+            managedCacheEntries = DemoFirmwareLibrary.cachedEntries
+            validatedCacheEntries = Dictionary(uniqueKeysWithValues: managedCacheEntries.map { (FirmwareReleaseKey($0.release), $0) })
+            return
+        }
         let cache = cache, validator = validator
         managedCacheEntries = (try? await Task.detached { try cache.managedEntries(validator: validator, knownReleases: knownReleases) }.value) ?? []
         validatedCacheEntries = Dictionary(uniqueKeysWithValues: managedCacheEntries.compactMap { entry in

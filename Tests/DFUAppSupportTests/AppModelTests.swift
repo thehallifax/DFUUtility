@@ -421,9 +421,58 @@ private let noOpLogger = AppMockLogger()
 }
 
 @Test @MainActor func activeDownloadTaskCancelsCleanly() async throws {
-    let app = AppModel(ipswService: DemoIPSWService(), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true)
+    let cache = tempCache()
+    let app = AppModel(ipswService: DemoIPSWService(), discovery: AppMockDiscovery(values: []), cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true)
     await app.load(); app.beginDownload(); try await Task.sleep(for: .milliseconds(180)); app.cancelDownload(); try await Task.sleep(for: .milliseconds(180))
     #expect(app.downloadState == .cancelled); #expect(app.imageURL == nil)
+    #expect(!FileManager.default.fileExists(atPath: cache.directory.path))
+}
+
+@Test func demoCatalogueCoversEveryPlatformAndFiltersCompatibleProducts() async throws {
+    let service = DemoIPSWService()
+    for platform in RestorePlatform.allCases {
+        let releases = try await service.availableImages(for: platform)
+        #expect(!releases.isEmpty)
+        #expect(releases.allSatisfy { $0.platform == platform })
+        #expect(releases.allSatisfy { $0.build.contains("DEMO") && $0.downloadURL.host == "firmware.demo.invalid" })
+    }
+    let phone = DFUDevice(family: .iPhone, state: .recovery, productType: "iPhone15,2")
+    let pad = DFUDevice(family: .iPad, state: .recovery, productType: "iPad13,18")
+    let mac = DFUDevice(family: .mac, state: .dfu, productType: "Mac14,2")
+    #expect(try await service.availableImages(for: phone).allSatisfy { $0.supportedDevices.contains("iPhone15,2") })
+    #expect(try await service.availableImages(for: pad).allSatisfy { $0.supportedDevices.contains("iPad13,18") })
+    #expect(try await service.availableImages(for: mac).allSatisfy { $0.supportedDevices.contains("Mac14,2") })
+    let incompatible = DFUDevice(family: .iPhone, state: .recovery, productType: "iPhone-DEMO-OTHER")
+    #expect(try await service.availableImages(for: incompatible).isEmpty)
+}
+
+@Test @MainActor func demoFirmwareLibraryMergesCatalogueAndInMemoryCacheAcrossPlatforms() async {
+    let cache = tempCache()
+    let app = AppModel(ipswService: DemoIPSWService(), discovery: AppMockDiscovery(values: []), cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true)
+    await app.load()
+
+    #expect(app.availableReleases.count == 2)
+    #expect(app.choice(for: app.availableReleases.first { $0.build == "25G83-DEMO" }!)?.isRecommended == true)
+    #expect(app.choice(for: app.availableReleases.first { $0.build == "25G83-DEMO" }!)?.cacheState == .downloadRequired)
+    #expect(app.choice(for: app.availableReleases.first { $0.build == "25F74-DEMO" }!)?.cacheState == .downloaded(URL(fileURLWithPath: "/demo/cache/macOS/25F74-DEMO/Restore.ipsw")))
+
+    await app.selectBrowsePlatform(.iOS)
+    #expect(app.availableReleases.map(\.build) == ["23G83-DEMO", "22H374-DEMO", "20H392-DEMO", "16H88-DEMO"])
+    #expect(app.availableReleases.filter { $0.build == "22H374-DEMO" }.count == 1)
+    #expect(app.choice(for: app.availableReleases[0])?.isRecommended == true)
+    #expect(app.choice(for: app.availableReleases[0])?.cacheState == .downloadRequired)
+    for build in ["22H374-DEMO", "20H392-DEMO", "16H88-DEMO"] {
+        let release = app.availableReleases.first { $0.build == build }!
+        if case .downloaded = app.choice(for: release)?.cacheState {} else { Issue.record("Expected \(build) to be a validated demo cache entry") }
+    }
+    let historical = app.availableReleases.first { $0.build == "16H88-DEMO" }!
+    app.selectRelease(historical)
+    #expect(app.imageURL == URL(fileURLWithPath: "/demo/cache/iOS/16H88-DEMO/Restore.ipsw"))
+
+    await app.selectBrowsePlatform(.iPadOS)
+    #expect(app.availableReleases.count == 2)
+    #expect(Set(app.managedCacheEntries.map(\.release.platform)) == Set(RestorePlatform.allCases))
+    #expect(!FileManager.default.fileExists(atPath: cache.directory.path))
 }
 
 @Test @MainActor func manualIPSWValidationSuccess() async {
@@ -579,10 +628,16 @@ private let noOpLogger = AppMockLogger()
 
 @Test @MainActor func demoLoadAndRefreshNeverInvokeInjectedHardwareDiscovery() async {
     let discovery = CountingAppDiscovery([DFUDevice(family: .iPhone, state: .normal, ecid: "REAL", productType: "iPhone7,2")])
-    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true)
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(macVDM: false), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true)
     await app.load(); await app.refreshDiagnosticsAndTarget()
-    #expect(discovery.callCount == 0); #expect(app.targetDevices.isEmpty); #expect(app.deviceSessions.sessions.count == 4)
+    #expect(discovery.callCount == 0); #expect(app.targetDevices.isEmpty); #expect(app.deviceSessions.sessions.count == 4); #expect(!app.shouldShowMissingDFUHelperWarning)
     app.startBatchRestore(); #expect(app.presentedError?.contains("Demo mode") == true)
+}
+
+@Test @MainActor func normalModeStillReportsMissingDFUHelper() async {
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(macVDM: false), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load()
+    #expect(app.shouldShowMissingDFUHelperWarning)
 }
 
 @Test @MainActor func automaticMacDFURemainsSingleTargetOnly() async {
