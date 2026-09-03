@@ -21,17 +21,29 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        let layout = MainWindowConfiguration.standard
+        VStack(spacing: 0) {
             ViewThatFits(in: .horizontal) {
-                HStack { headerTitle; Spacer(); headerActions }
-                VStack(alignment: .leading, spacing: 10) { headerTitle; headerActions }
+                HStack { headerBrand; Spacer(); headerActions }
+                VStack(alignment: .leading, spacing: 10) { headerBrand; headerActions }
             }
-            targetCard
+            .frame(maxWidth: layout.maximumWorkspaceWidth, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
+
             Divider()
-            restoreCard
-            Spacer(minLength: 0)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    targetCard
+                    Divider()
+                    restoreCard
+                }
+                .frame(maxWidth: layout.maximumWorkspaceWidth, alignment: .leading)
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
         }
-        .padding(24)
         .task { await model.load() }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
@@ -62,6 +74,15 @@ struct ContentView: View {
         }
     }
 
+    private var headerBrand: some View {
+        ViewThatFits(in: .horizontal) {
+            VStack(alignment: .leading, spacing: 1) {
+                headerTitle
+                Text("Restore and revive Macs, iPhones and iPads.").font(.caption).foregroundStyle(.secondary)
+            }
+            headerTitle
+        }
+    }
     private var headerTitle: some View { Text("DFUUtility").font(.largeTitle.bold()) }
     private var headerActions: some View {
         ViewThatFits(in: .horizontal) {

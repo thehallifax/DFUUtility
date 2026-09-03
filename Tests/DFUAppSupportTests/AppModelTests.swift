@@ -595,8 +595,21 @@ private let noOpLogger = AppMockLogger()
 @Test @MainActor func windowConfigurationHasStableSensibleDefaultAndMinimum() {
     let value = MainWindowConfiguration.standard
     #expect(value.defaultWidth == 1040); #expect(value.defaultHeight == 800)
-    #expect(value.minimumWidth == 820); #expect(value.minimumHeight == 680)
+    #expect(value.minimumWidth == 760); #expect(value.minimumHeight == 500)
+    #expect(value.maximumWorkspaceWidth == 1160)
     #expect(value.defaultWidth > value.minimumWidth); #expect(value.defaultHeight > value.minimumHeight)
+    #expect(value.maximumWorkspaceWidth > value.defaultWidth)
+}
+
+@Test func mainLayoutKeepsHeaderOutsideScrollableBoundedWorkspace() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let content = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/ContentView.swift"), encoding: .utf8)
+    let header = try #require(content.range(of: "HStack { headerBrand; Spacer(); headerActions }"))
+    let scroll = try #require(content.range(of: "ScrollView {", range: header.upperBound..<content.endIndex))
+    let target = try #require(content.range(of: "targetCard", range: scroll.upperBound..<content.endIndex))
+    #expect(header.lowerBound < scroll.lowerBound && scroll.lowerBound < target.lowerBound)
+    #expect(content.contains("maxWidth: layout.maximumWorkspaceWidth"))
+    #expect(!content.contains("scaleEffect")); #expect(!content.contains("MagnificationGesture"))
 }
 
 @Test @MainActor func knownAndUnknownDownloadsHaveExplicitInitialPresentation() async {
