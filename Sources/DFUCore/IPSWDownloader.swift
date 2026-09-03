@@ -2,7 +2,16 @@ import Foundation
 
 public protocol IPSWDownloading: Sendable { func download(_ release: IPSWRelease, to partial: URL, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws }
 public struct AppleIPSWDownloader: IPSWDownloading {
+    enum ResumeDisposition: Equatable { case restart, append }
     public init() {}
+    static func resumeDisposition(existing: Int64, status: Int, contentRange: String?) throws -> ResumeDisposition {
+        guard existing > 0 else { return .restart }
+        if status == 200 { return .restart }
+        guard status == 206, contentRange?.hasPrefix("bytes \(existing)-") == true else {
+            throw IPSWServiceError.malformedCatalogue("CDN returned an unexpected resume range")
+        }
+        return .append
+    }
     public func download(_ release: IPSWRelease, to partial: URL, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws {
         let fm = FileManager.default; try fm.createDirectory(at: partial.deletingLastPathComponent(), withIntermediateDirectories: true)
         let existing = ((try? fm.attributesOfItem(atPath: partial.path)[.size]) as? NSNumber)?.int64Value ?? 0
@@ -11,9 +20,9 @@ public struct AppleIPSWDownloader: IPSWDownloading {
         guard let response = rawResponse as? HTTPURLResponse else { throw IPSWServiceError.malformedCatalogue("non-HTTP download response") }
         guard let finalURL = response.url, AppleIPSWCatalogue.isTrustedFirmwareURL(finalURL) else { throw IPSWServiceError.untrustedURL(response.url?.absoluteString ?? "unknown") }
         guard response.statusCode == 200 || response.statusCode == 206 else { throw IPSWServiceError.http(response.statusCode) }
-        let resumed = existing > 0 && response.statusCode == 206
-        if resumed, response.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(existing)-") != true { throw IPSWServiceError.malformedCatalogue("CDN returned an unexpected resume range") }
-        if existing > 0 && !resumed { try? fm.removeItem(at: partial) }
+        let disposition = try Self.resumeDisposition(existing: existing, status: response.statusCode, contentRange: response.value(forHTTPHeaderField: "Content-Range"))
+        let resumed = disposition == .append
+        if existing > 0 && disposition == .restart { try? fm.removeItem(at: partial) }
         if !fm.fileExists(atPath: partial.path) { fm.createFile(atPath: partial.path, contents: nil) }
         let handle = try FileHandle(forWritingTo: partial); defer { try? handle.close() }
         if resumed { try handle.seekToEnd() } else { try handle.truncate(atOffset: 0) }

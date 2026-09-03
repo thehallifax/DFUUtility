@@ -79,6 +79,7 @@ public struct MacVDMToolFailure: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch kind {
         case .noCompatibleTargetPath: "Couldn’t enter DFU mode. No compatible USB-C DFU connection was found."
+        case .targetCommunication where reachedDBMaWithoutFinalReply: "Couldn’t verify the DFU transition. The connected Mac reached the transition stage, but macvdmtool did not receive the final VDM reply."
         case .targetCommunication: "Couldn’t enter DFU mode. The connected Mac was detected, but it did not accept the DFU transition."
         case .processLaunch: "Couldn’t start the bundled DFU component."
         case .unknown: "Couldn’t enter DFU mode because the bundled DFU component failed."
@@ -88,7 +89,8 @@ public struct MacVDMToolFailure: LocalizedError, Equatable, Sendable {
     public var recoverySuggestion: String? {
         switch kind {
         case .noCompatibleTargetPath: "Confirm the data cable is connected to the correct DFU port, then try again."
-        case .targetCommunication: "Keep the USB-C cable connected, confirm the target Mac is powered on normally, then try Enter DFU again."
+        case .targetCommunication where reachedDBMaWithoutFinalReply: "The Mac may already be in DFU. Wait briefly, then click Refresh. If it remains absent, reconnect the cable. On newer MacBooks, consult Apple’s model-specific DFU-port guidance and try the alternate appropriate USB-C port."
+        case .targetCommunication: "Keep the USB-C cable connected, confirm the target Mac is powered on normally, check Apple’s model-specific DFU-port guidance, then try Enter DFU again."
         case .processLaunch: "Rebuild or reinstall DFUUtility, then try again."
         case .unknown: "Use View Log for technical details, then retry only after checking the target and cable."
         }
@@ -98,8 +100,20 @@ public struct MacVDMToolFailure: LocalizedError, Equatable, Sendable {
         var values = ["macvdmtool failure classification: \(kind.rawValue)", "Exit status: \(exitStatus)"]
         if let wrapperExitStatus { values.append("Authorization wrapper exit status: \(wrapperExitStatus)") }
         if let replyCode { values.append("VDM reply: \(replyCode)") }
+        if reachedDBMaWithoutFinalReply {
+            values.append("Transition observation: HPM unlock and DBMa transition completed, but the final VDM reply was not received. DFU state remains unverified until rediscovery.")
+        }
         values.append("Raw output:\n\(output.isEmpty ? "<none>" : output)")
         return values.joined(separator: "\n")
+    }
+
+    public var reachedDBMaWithoutFinalReply: Bool {
+        let lower = output.lowercased()
+        let unlocked = output.range(of: #"(?im)^Unlocking\.\.\. OK\.?\s*$"#, options: .regularExpression) != nil
+        let enteredDBMa = output.range(of: #"(?im)^Entering DBMa mode\.\.\. Status: DBMa\s*$"#, options: .regularExpression) != nil
+        return kind == .targetCommunication
+            && unlocked && enteredDBMa
+            && lower.contains("did not get a reply to vdm")
     }
 }
 

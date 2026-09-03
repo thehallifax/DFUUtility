@@ -61,6 +61,10 @@ Hardware: MacBook Air M2, model `Mac14,2`, connected to the Apple Silicon host t
 
 The direct project-built helper emitted the expected HPM discovery, DBMa entry, and reboot messages and moved the same ECID from Normal to DFU. The revive exposed numeric `cfgutil` progress events for both **Unzipping System** and **Installing System**. Those real events should feed a later structured GUI progress parser rather than an invented percentage.
 
+Subsequent packaged-GUI testing on `Mac17,6` passed discovery, automatic Enter DFU, DFU rediscovery, macOS 26.6.2 / 25G83 Restore, structured progress, and verified restart to Normal. On that specific machine, automatic entry required the rightmost USB-C port on the left side; after transition, moving the cable to the other left-side port allowed the already-DFU target to enumerate immediately. This is tested-hardware guidance only. It does not establish a universal port map for M4/M5-era MacBooks, and it was not a DFUUtility discovery failure.
+
+A missing final VDM reply after successful HPM unlock and DBMa entry is retained as a failed/unverified command result. The target may nevertheless have transitioned, so the safe response is to wait briefly, Refresh, reconnect if needed, and consult Apple's model-specific DFU-port guidance—not to retry automatically or proceed directly to Restore.
+
 ## Detection and state
 
 Primary discovery uses `cfgutil`, because it is also the eventual actor and supplies ECID for safe targeting. A narrow `ioreg` fallback recognizes only Apple USB recovery/DFU identities (including the standard DFU product identity `0x1227`); it does not enumerate or operate on arbitrary USB devices. Fields are omitted when unavailable rather than inferred.

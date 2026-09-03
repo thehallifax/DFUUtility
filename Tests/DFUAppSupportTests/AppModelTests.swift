@@ -256,8 +256,9 @@ private let noOpLogger = AppMockLogger()
 
 @Test @MainActor func catalogueAndCacheDuplicateUsesCatalogueMetadataAndLocalValidation() async throws {
     let cache = tempCache()
-    let cached = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/old-url.ipsw")!, fileSize: 17, supportedDevices: ["iPhone7,2"])
-    let catalogue = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/catalogue-url.ipsw")!, fileSize: 99, supportedDevices: ["iPhone7,2"], signingStatus: .appleCatalogue)
+    let assetURL = URL(string: "https://updates.cdn-apple.com/catalogue-url.ipsw")!
+    let cached = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G83", downloadURL: assetURL, fileSize: 17, checksum: "same-asset", supportedDevices: ["iPhone7,2"])
+    let catalogue = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G83", downloadURL: assetURL, fileSize: 99, checksum: "same-asset", supportedDevices: ["iPhone7,2"], signingStatus: .appleCatalogue)
     let localURL = try addValidatedCacheFixture(cached, to: cache)
     let app = model(service: AppMockService(releases: [catalogue]), cache: cache)
     await app.selectBrowsePlatform(.iOS)
@@ -266,6 +267,175 @@ private let noOpLogger = AppMockLogger()
     #expect(app.availableReleases[0].downloadURL == catalogue.downloadURL)
     #expect(app.choice(for: catalogue)?.cacheState == .downloaded(localURL))
     #expect(app.displaySize(for: catalogue) == 99)
+}
+
+@Test @MainActor func latestCompatibleUsesExactValidatedManagedMobileAsset() async throws {
+    let cache = tempCache()
+    let compatible = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, checksum: "ipad12-checksum", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let ipad11 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad11.ipsw")!, checksum: "ipad11-checksum", supportedDevices: ["iPad11,1", "iPad11,2", "iPad11,3", "iPad11,4"])
+    let ipad13 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad13.ipsw")!, checksum: "ipad13-checksum", supportedDevices: ["iPad13,1", "iPad13,2"])
+    let compatibleURL = try addValidatedCacheFixture(compatible, to: cache)
+    _ = try addValidatedCacheFixture(ipad11, to: cache)
+    let devices = [
+        DFUDevice(family: .iPad, state: .recovery, ecid: "SYNTHETIC-PAD-A", productType: "iPad12,1"),
+        DFUDevice(family: .iPad, state: .recovery, ecid: "SYNTHETIC-PAD-B", productType: "iPad12,1")
+    ]
+    let app = model(service: AppMockService(releases: [ipad13, ipad11, compatible]), devices: devices, cache: cache)
+    await app.load(); await app.selectBrowsePlatform(.iPadOS)
+    app.selectRelease(ipad13)
+    for session in app.deviceSessions.sessions { app.setSessionSelected(session.id, selected: true) }
+    await app.useLatestCompatibleFirmwareForSelectedSessions()
+
+    #expect(app.selectedRelease == compatible)
+    #expect(app.imageURL?.resolvingSymlinksInPath() == compatibleURL.resolvingSymlinksInPath())
+    #expect(app.deviceSessions.sessions.allSatisfy {
+        $0.selectedRelease == compatible
+            && $0.selectedImageURL?.resolvingSymlinksInPath() == compatibleURL.resolvingSymlinksInPath()
+            && $0.firmwareState == .validated && $0.canRestore
+    })
+    #expect(app.batchCoordinator.canStartRestore)
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.deviceSessions.sessions.allSatisfy { $0.selectedRelease == compatible && $0.canRestore })
+}
+
+@Test @MainActor func latestCompatibleFailsSafelyWhenExactMobileProductIsAbsent() async {
+    let ipad11 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad11.ipsw")!, checksum: "ipad11-checksum", supportedDevices: ["iPad11,1", "iPad11,2", "iPad11,3", "iPad11,4"])
+    let ipad13 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad13.ipsw")!, checksum: "ipad13-checksum", supportedDevices: ["iPad13,1", "iPad13,2"])
+    let devices = [
+        DFUDevice(family: .iPad, state: .recovery, ecid: "SYNTHETIC-PAD-A", productType: "iPad12,1"),
+        DFUDevice(family: .iPad, state: .recovery, ecid: "SYNTHETIC-PAD-B", productType: "iPad12,1")
+    ]
+    let app = model(service: AppMockService(releases: [ipad13, ipad11]), devices: devices)
+    await app.load(); await app.selectBrowsePlatform(.iPadOS)
+    app.selectRelease(ipad13)
+    for session in app.deviceSessions.sessions { app.setSessionSelected(session.id, selected: true) }
+
+    await app.useLatestCompatibleFirmwareForSelectedSessions()
+
+    #expect(app.selectedRelease == ipad13)
+    #expect(app.presentedError == "No compatible Apple restore image was found for iPad12,1.")
+    #expect(app.deviceSessions.sessions.allSatisfy {
+        $0.selectedRelease == nil && $0.selectedImageURL == nil && !$0.canRestore
+            && $0.restoreEligibilityFailure == "No compatible Apple restore image was found for iPad12,1."
+    })
+    #expect(!app.batchCoordinator.canStartRestore)
+}
+
+@Test @MainActor func newlyDiscoveredRecoveryMobileSessionAutoAssignsExactValidatedLatestWithoutSelection() async throws {
+    let cache = tempCache()
+    let older = IPSWRelease(platform: .iPadOS, version: "26.6", build: "23G70", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12-older.ipsw")!, checksum: "ipad12-older", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let latest = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12-latest.ipsw")!, checksum: "ipad12-latest", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let wrong11 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad11.ipsw")!, checksum: "ipad11", supportedDevices: ["iPad11,1", "iPad11,2", "iPad11,3", "iPad11,4"])
+    let wrong13 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad13.ipsw")!, checksum: "ipad13", supportedDevices: ["iPad13,1", "iPad13,2"])
+    _ = try addValidatedCacheFixture(older, to: cache)
+    let latestURL = try addValidatedCacheFixture(latest, to: cache)
+    _ = try addValidatedCacheFixture(wrong11, to: cache)
+    _ = try addValidatedCacheFixture(wrong13, to: cache)
+    let device = DFUDevice(family: .iPad, state: .recovery, ecid: "SYNTHETIC-PAD", productType: "iPad12,1")
+    let service = TrackingIPSWService(releases: [wrong13, wrong11, older, latest])
+    let app = AppModel(ipswService: service, discovery: AppMockDiscovery(values: [device]), cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+
+    await app.load()
+
+    let session = try #require(app.deviceSessions.sessions.first)
+    #expect(session.selectedRelease == latest)
+    #expect(session.selectedImageURL?.resolvingSymlinksInPath() == latestURL.resolvingSymlinksInPath())
+    #expect(session.firmwareState == .validated && session.canRestore)
+    #expect(!session.isSelected)
+    #expect(service.eventRequests == 0)
+}
+
+@Test @MainActor func newlyDiscoveredNormalMobileMayAutoAssignButCannotRestore() async throws {
+    let cache = tempCache()
+    let release = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, checksum: "ipad12", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let cachedURL = try addValidatedCacheFixture(release, to: cache)
+    let device = DFUDevice(family: .iPad, state: .normal, ecid: "SYNTHETIC-PAD", productType: "iPad12,1")
+    let app = model(service: AppMockService(releases: [release]), devices: [device], cache: cache)
+
+    await app.load()
+
+    let session = try #require(app.deviceSessions.sessions.first)
+    #expect(session.selectedRelease == release && session.selectedImageURL == cachedURL)
+    #expect(session.firmwareState == .validated)
+    #expect(!session.isSelected && !session.canRestore)
+    #expect(session.restoreEligibilityFailure == "Restore requires Recovery or DFU mode.")
+}
+
+@Test @MainActor func mobileAutoAssignmentLeavesNoCacheWrongProductAndAmbiguousLatestUnassigned() async throws {
+    let exactA = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12-a.ipsw")!, checksum: "ipad12-a", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let exactB = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12-b.ipsw")!, checksum: "ipad12-b", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let wrong = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad13.ipsw")!, checksum: "ipad13", supportedDevices: ["iPad13,1", "iPad13,2"])
+    let device = DFUDevice(family: .iPad, state: .recovery, ecid: "SYNTHETIC-PAD", productType: "iPad12,1")
+
+    for releases in [[wrong], [exactA], [exactA, exactB]] {
+        let cache = tempCache()
+        if releases.count == 2 {
+            _ = try addValidatedCacheFixture(exactA, to: cache)
+            _ = try addValidatedCacheFixture(exactB, to: cache)
+        }
+        let service = TrackingIPSWService(releases: releases)
+        let app = AppModel(ipswService: service, discovery: AppMockDiscovery(values: [device]), cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+        await app.load()
+        let session = try #require(app.deviceSessions.sessions.first)
+        #expect(session.selectedRelease == nil && session.selectedImageURL == nil)
+        #expect(session.firmwareState == .unselected && !session.canRestore && !session.isSelected)
+        #expect(service.eventRequests == 0)
+    }
+}
+
+@Test @MainActor func automaticResolverPreservesManualAssignmentAndLeavesReplacementDeviceUnselected() async throws {
+    let cache = tempCache()
+    let latest = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12-latest.ipsw")!, checksum: "ipad12-latest", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let manual = IPSWRelease(platform: .iPadOS, version: "26.5", build: "23F79", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12-manual.ipsw")!, checksum: "ipad12-manual", supportedDevices: ["iPad12,1", "iPad12,2"])
+    _ = try addValidatedCacheFixture(latest, to: cache)
+    let manualURL = try addValidatedCacheFixture(manual, to: cache)
+    let first = DFUDevice(family: .iPad, state: .recovery, ecid: "PAD-ONE", productType: "iPad12,1")
+    let second = DFUDevice(family: .iPad, state: .recovery, ecid: "PAD-TWO", productType: "iPad12,1")
+    let discovery = AppSequencedDiscovery([[first], [first, second], [first, second]])
+    let app = AppModel(ipswService: AppMockService(releases: [manual, latest]), discovery: discovery, cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+
+    await app.load()
+    let firstID = try #require(app.deviceSessions.sessions.first).id
+    app.deviceSessions.setFirmware(for: firstID, release: manual, url: manualURL, validation: .validated)
+    app.setSessionSelected(firstID, selected: true)
+    await app.refreshDiagnosticsAndTarget()
+
+    let retained = try #require(app.deviceSessions.sessions.first { $0.id == firstID })
+    let added = try #require(app.deviceSessions.sessions.first { $0.ecid == "PAD-TWO" })
+    #expect(retained.selectedRelease == manual && retained.selectedImageURL == manualURL && retained.isSelected)
+    #expect(added.selectedRelease == latest && added.selectedImageURL != nil)
+    #expect(!added.isSelected && added.canRestore)
+
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.deviceSessions.sessions.first { $0.id == firstID }?.selectedRelease == manual)
+    #expect(app.deviceSessions.sessions.first { $0.ecid == "PAD-TWO" }?.selectedRelease == latest)
+}
+
+@Test @MainActor func mobileCachedFirmwareAutoAssignmentDoesNotApplyToMacSessions() async throws {
+    let cache = tempCache()
+    let release = IPSWRelease(platform: .macOS, version: "26.6.2", build: "25G83", downloadURL: URL(string: "https://updates.cdn-apple.com/mac.ipsw")!, checksum: "mac", supportedDevices: ["Mac14,2"])
+    _ = try addValidatedCacheFixture(release, to: cache)
+    let mac = DFUDevice(family: .mac, state: .dfu, ecid: "SYNTHETIC-MAC", productType: "Mac14,2")
+    let app = model(service: AppMockService(releases: [release]), devices: [mac], cache: cache)
+
+    await app.load()
+
+    let session = try #require(app.deviceSessions.sessions.first)
+    #expect(session.selectedRelease == nil && session.selectedImageURL == nil)
+    #expect(session.firmwareState == .unselected && !session.isSelected)
+}
+
+@Test @MainActor func sameProductsAndBuildWithDifferentAssetsDoNotMerge() async throws {
+    let cache = tempCache()
+    let cached = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/old.ipsw")!, checksum: "old-checksum", supportedDevices: ["iPad12,1"])
+    let catalogue = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/new.ipsw")!, checksum: "new-checksum", supportedDevices: ["iPad12,1"])
+    _ = try addValidatedCacheFixture(cached, to: cache)
+    let app = model(service: AppMockService(releases: [catalogue]), cache: cache)
+    await app.selectBrowsePlatform(.iPadOS)
+    #expect(app.availableReleases.count == 2)
+    #expect(app.choice(for: cached)?.cacheState != .downloadRequired)
+    #expect(app.choice(for: catalogue)?.cacheState == .downloadRequired)
+    #expect(FirmwareReleaseKey(cached) != FirmwareReleaseKey(catalogue))
 }
 
 @Test @MainActor func mobileBuildVariantsWithDifferentProductsDoNotCollapse() async {
@@ -292,16 +462,17 @@ private let noOpLogger = AppMockLogger()
     let first = app.deviceSessions.sessions[0].id, second = app.deviceSessions.sessions[1].id
     app.setSessionSelected(first, selected: true)
     app.applyCurrentFirmwareToSelectedSessions()
-    #expect(app.deviceSessions.sessions.first { $0.id == first }?.selectedImageURL == cachedURL)
+    #expect(app.deviceSessions.sessions.first { $0.id == first }?.selectedImageURL?.resolvingSymlinksInPath() == cachedURL.resolvingSymlinksInPath())
     #expect(app.deviceSessions.sessions.first { $0.id == first }?.canRestore == true)
-    #expect(app.deviceSessions.sessions.first { $0.id == second }?.firmwareState == .unselected)
+    #expect(app.deviceSessions.sessions.first { $0.id == second }?.firmwareState == .validated)
+    #expect(app.deviceSessions.sessions.first { $0.id == second }?.isSelected == false)
 
     app.setSessionSelected(second, selected: true)
     app.applyCurrentFirmwareToSelectedSessions()
-    #expect(app.deviceSessions.sessions.allSatisfy { $0.canRestore && $0.selectedImageURL == cachedURL })
+    #expect(app.deviceSessions.sessions.allSatisfy { $0.canRestore && $0.selectedImageURL?.resolvingSymlinksInPath() == cachedURL.resolvingSymlinksInPath() })
     #expect(app.batchCoordinator.canStartRestore)
     await app.refreshDiagnosticsAndTarget()
-    #expect(app.deviceSessions.sessions.allSatisfy { $0.canRestore && $0.selectedImageURL == cachedURL })
+    #expect(app.deviceSessions.sessions.allSatisfy { $0.canRestore && $0.selectedImageURL?.resolvingSymlinksInPath() == cachedURL.resolvingSymlinksInPath() })
 }
 
 @Test @MainActor func selectingCachedOnlyReleaseUsesLocalFileWithoutDownload() async throws {
@@ -702,7 +873,7 @@ private let noOpLogger = AppMockLogger()
     #expect(app.canUseMobileDFUAssistant); #expect(app.targetDFUGuidance == .guidedPhysicalButtons)
     await app.refreshDiagnosticsAndTarget()
     #expect(app.target?.family == .iPhone); #expect(app.selectedRelease == phoneRelease); #expect(app.restoreSectionTitle == "iOS Restore")
-    #expect(service.families == [.iPhone, .iPad, .iPhone])
+    #expect(service.families == [.iPhone, .iPhone, .iPad, .iPad, .iPhone, .iPhone])
 }
 
 @Test func deviceFamilyIsTheSharedRestorePlatformMapping() {
@@ -772,6 +943,44 @@ private let noOpLogger = AppMockLogger()
     let devices = [DFUDevice(family: .mac, state: .normal, ecid: "MAC-A", productType: "Mac14,2"), DFUDevice(family: .mac, state: .normal, ecid: "MAC-B", productType: "Mac15,3")]
     let app = model(devices: devices); await app.refreshDiagnosticsAndTarget(); app.selectTarget(ecid: "MAC-A")
     #expect(app.target?.ecid == "MAC-A"); #expect(!app.canEnterDFU); #expect(app.macDFUMultiTargetUnavailable)
+}
+
+@Test @MainActor func sessionPresentationRemainsCanonicalAcrossDeviceCountChanges() async {
+    let mac = DFUDevice(family: .mac, state: .dfu, ecid: "MAC-A", productType: "Mac14,2")
+    let phone = DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE-B", productType: "iPhone15,2")
+    let discovery = AppSequencedDiscovery([[mac], [mac, phone], [mac]])
+    let release = IPSWRelease(platform: .macOS, version: "26.6.2", build: "25G83", downloadURL: URL(string: "https://updates.cdn-apple.com/mac.ipsw")!, supportedDevices: ["Mac14,2"])
+    let cache = tempCache(), cachedURL = try! addValidatedCacheFixture(release, to: cache)
+    let app = AppModel(ipswService: AppMockService(releases: [release]), discovery: discovery, cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+
+    await app.load()
+    #expect(app.showsSessionPresentation && app.deviceSessions.sessions.count == 1)
+    let macID = app.deviceSessions.sessions[0].id
+    app.setSessionSelected(macID, selected: true)
+    app.applyCurrentFirmwareToSelectedSessions()
+    #expect(app.deviceSessions.sessions[0].isSelected)
+    #expect(app.deviceSessions.sessions[0].selectedImageURL?.resolvingSymlinksInPath() == cachedURL.resolvingSymlinksInPath())
+    #expect(app.deviceSessions.sessions[0].canRestore)
+    #expect(app.batchCoordinator.canStartRestore)
+
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.showsSessionPresentation && app.deviceSessions.sessions.count == 2)
+    #expect(app.deviceSessions.sessions.first { $0.id == macID }?.isSelected == true)
+    #expect(app.deviceSessions.sessions.first { $0.ecid == "PHONE-B" }?.isSelected == false)
+
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.showsSessionPresentation && app.deviceSessions.sessions.count == 1)
+    #expect(app.deviceSessions.sessions[0].id == macID)
+    #expect(app.deviceSessions.sessions[0].isSelected && app.deviceSessions.sessions[0].canRestore)
+}
+
+@Test func canonicalSessionUIHasNoDeviceCountLayoutFork() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let content = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/ContentView.swift"), encoding: .utf8)
+    #expect(content.contains("if model.showsSessionPresentation"))
+    #expect(content.contains("Connected target"))
+    #expect(!content.contains("Multiple targets detected"))
+    #expect(content.contains("Previous batch complete"))
 }
 
 @Test @MainActor func guidedMobileDFUDetectionUpdatesMainTargetWithoutStartingAnOperation() async {
@@ -1019,6 +1228,27 @@ private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscoverin
 
     await app.refreshDiagnosticsAndTarget(); #expect(app.target?.state == .normal); #expect(app.canEnterDFU)
     await app.enterDFU(); #expect(controller.callCount == 2); #expect(!app.operationInProgress)
+}
+
+@Test @MainActor func missingFinalVDMReplyIsActionableButNeverPresentedAsSuccess() async {
+    let raw = "Looking for HPM devices...\nFound: IOService:/fixture\nUnlocking... OK\nEntering DBMa mode... Status: DBMa\nDid not get a reply to VDM"
+    let transition = MacVDMToolFailure.classify(status: 255, output: raw)
+    let logger = AppMockLogger()
+    let target = DFUDevice(state: .normal, model: "MacBookPro21,6", ecid: "0xSYNTHETIC")
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: SequencedDFUFailure([transition]), operationLogger: logger, requiresPrivilegedHelperSetup: false)
+
+    await app.refreshDiagnosticsAndTarget()
+    await app.enterDFU()
+
+    if case .failed(let message) = app.restoreState {
+        #expect(message.contains("may already be in DFU"))
+        #expect(message.contains("click Refresh"))
+        #expect(message.contains("reconnect the cable"))
+        #expect(!message.contains("Transition result: success"))
+    } else { Issue.record("A missing final VDM reply must remain a failure") }
+    let log = logger.messages.joined(separator: "\n")
+    #expect(log.contains("HPM unlock and DBMa transition completed"))
+    #expect(log.contains("DFU state remains unverified until rediscovery"))
 }
 
 @Test func dfuFailurePresentationKeepsAuthorizationToolAndLaunchFailuresDistinct() {

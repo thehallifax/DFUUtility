@@ -31,12 +31,18 @@ private final class MacManifestRunner: @unchecked Sendable, CommandRunning {
 private func result(_ string: String, status: Int32 = 0) -> CommandResult { CommandResult(status: status, stdout: Data(string.utf8), stderr: Data()) }
 private actor MockDownloader: IPSWDownloading {
     enum Behavior: Sendable { case success, interrupted, failure }
-    let behavior: Behavior; private(set) var calls = 0
+    let behavior: Behavior; private(set) var calls = 0; private(set) var requested: [IPSWRelease] = []
     init(_ behavior: Behavior = .success) { self.behavior = behavior }
     func download(_ release: IPSWRelease, to partial: URL, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws {
-        calls += 1; try FileManager.default.createDirectory(at: partial.deletingLastPathComponent(), withIntermediateDirectories: true); try Data("partial".utf8).write(to: partial)
+        calls += 1; requested.append(release); try FileManager.default.createDirectory(at: partial.deletingLastPathComponent(), withIntermediateDirectories: true); try Data("partial".utf8).write(to: partial)
         if behavior == .interrupted { throw CancellationError() }; if behavior == .failure { throw URLError(.cannotConnectToHost) }
     }
+}
+
+private final class CapturingValidator: @unchecked Sendable, IPSWValidating {
+    private let lock = NSLock(); private var values: [IPSWRelease] = []
+    func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { if let release { lock.withLock { values.append(release) } } }
+    var releases: [IPSWRelease] { lock.withLock { values } }
 }
 
 @Test func parsesAppleCatalogueAndAggregatesModels() throws {
@@ -105,6 +111,60 @@ private actor MockDownloader: IPSWDownloading {
     #expect(cache.cachedURL(for: ipad16) == stored)
     #expect(cache.cachedURL(for: ipad12) == nil)
     #expect(try cache.validCachedURL(for: ipad12, validator: AcceptValidator()) == nil)
+}
+
+@Test func sameBuildMobileAssetsHaveDistinctPartialAndFinalPaths() throws {
+    let cache = IPSWCache(directory: try temporaryDirectory())
+    let ipad12 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, checksum: "3bd45a92d29555141103a7423f78bc40099ec204", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let ipad16 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad16.ipsw")!, checksum: "1ef2543373a4a72c43adde7be5825e3d78339fad", supportedDevices: ["iPad16,8", "iPad16,9", "iPad16,10", "iPad16,11"])
+    #expect(cache.partialURL(for: ipad12) != cache.partialURL(for: ipad16))
+    #expect(cache.destination(for: ipad12) != cache.destination(for: ipad16))
+    #expect(cache.releaseDirectory(for: ipad12) != cache.releaseDirectory(for: ipad16))
+}
+
+@Test func sameBuildMobileAssetsCanCoexistAndRemainIndependentlyManaged() throws {
+    let cache = IPSWCache(directory: try temporaryDirectory()), validator = AcceptValidator()
+    let ipad12 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, checksum: "ipad12", supportedDevices: ["iPad12,1"])
+    let ipad16 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad16.ipsw")!, checksum: "ipad16", supportedDevices: ["iPad16,10"])
+    for release in [ipad12, ipad16] {
+        try cache.prepare(for: release); try Data(release.checksum!.utf8).write(to: cache.partialURL(for: release))
+        _ = try cache.commit(partial: cache.partialURL(for: release), release: release)
+    }
+    let entries = try cache.managedEntries(validator: validator).filter { $0.release.build == "23G83" }
+    #expect(entries.count == 2)
+    #expect(Set(entries.map { $0.release.checksum }) == Set(["ipad12", "ipad16"]))
+    #expect(cache.cachedURL(for: ipad12) != cache.cachedURL(for: ipad16))
+}
+
+@Test func matchingLegacyMobilePartialIsRecognizedButNeverCrossResumed() throws {
+    let root = try temporaryDirectory(), cache = IPSWCache(directory: root)
+    let ipad12 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, checksum: "ipad12", supportedDevices: ["iPad12,1"])
+    let ipad16 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad16.ipsw")!, checksum: "ipad16", supportedDevices: ["iPad16,10"])
+    let legacy = root.appendingPathComponent("iPadOS/downloads/23G83.partial")
+    try FileManager.default.createDirectory(at: legacy.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("variant-16".utf8).write(to: legacy)
+    try JSONEncoder().encode(ipad16).write(to: legacy.deletingPathExtension().appendingPathExtension("json"))
+    #expect(cache.partialURL(for: ipad16) == legacy)
+    #expect(cache.partialURL(for: ipad12) != legacy)
+    #expect(cache.partialURL(for: ipad12) != cache.partialURL(for: ipad16))
+}
+
+@Test func rangeResponsePolicyRestartsFullResponsesAndRejectsWrongRanges() throws {
+    #expect(try AppleIPSWDownloader.resumeDisposition(existing: 4096, status: 200, contentRange: nil) == .restart)
+    #expect(try AppleIPSWDownloader.resumeDisposition(existing: 4096, status: 206, contentRange: "bytes 4096-8191/8192") == .append)
+    #expect(throws: IPSWServiceError.self) { try AppleIPSWDownloader.resumeDisposition(existing: 4096, status: 206, contentRange: "bytes 0-8191/8192") }
+}
+
+@Test func downloadKeepsVariantURLChecksumAndProductsPairedThroughValidation() async throws {
+    let release = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, checksum: "3bd45a92d29555141103a7423f78bc40099ec204", supportedDevices: ["iPad12,1", "iPad12,2"])
+    let downloader = MockDownloader(), validator = CapturingValidator()
+    let service = AppleIPSWService(catalogue: MockCatalogue(), downloader: downloader, cache: IPSWCache(directory: try temporaryDirectory()), validator: validator)
+    _ = try await service.download(release)
+    #expect(await downloader.requested == [release])
+    #expect(validator.releases.last == release)
+    #expect(validator.releases.last?.downloadURL == release.downloadURL)
+    #expect(validator.releases.last?.checksum == release.checksum)
+    #expect(validator.releases.last?.supportedDevices == release.supportedDevices)
 }
 
 @Test func managedCacheEnumeratesPlatformsPartialsValidationAndTotalSize() throws {
@@ -405,6 +465,26 @@ private struct ThrowingRunner: CommandRunning {
     #expect(MacVDMToolFailure.classify(status: 7, output: "unexpected fixture failure").kind == .unknown)
 }
 
+@Test func missingFinalVDMReplyRemainsFailureWithRediscoveryGuidance() {
+    let output = "Looking for HPM devices...\nFound: IOService:/fixture\nUnlocking... OK\nEntering DBMa mode... Status: DBMa\nDid not get a reply to VDM"
+    let failure = MacVDMToolFailure.classify(status: 255, output: output)
+    #expect(failure.kind == .targetCommunication)
+    #expect(failure.exitStatus == 255)
+    #expect(failure.reachedDBMaWithoutFinalReply)
+    #expect(failure.localizedDescription.contains("Couldn’t verify"))
+    #expect(failure.recoverySuggestion?.contains("may already be in DFU") == true)
+    #expect(failure.recoverySuggestion?.contains("click Refresh") == true)
+    #expect(failure.recoverySuggestion?.contains("reconnect the cable") == true)
+    #expect(failure.recoverySuggestion?.contains("model-specific DFU-port guidance") == true)
+    #expect(failure.diagnosticDescription.contains("DFU state remains unverified until rediscovery"))
+
+    let incompleteEvidence = MacVDMToolFailure.classify(status: 255, output: "Entering DBMa mode... Failed.\nSomething else was OK.\nDid not get a reply to VDM")
+    #expect(incompleteEvidence.kind == .targetCommunication)
+    #expect(!incompleteEvidence.reachedDBMaWithoutFinalReply)
+    #expect(!incompleteEvidence.localizedDescription.contains("Couldn’t verify"))
+    #expect(incompleteEvidence.recoverySuggestion?.contains("may already be in DFU") == false)
+}
+
 @Test func communityDiagnosticsDoNotRequireHelperRegistration() {
     let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .community, helperState: .notRegistered, appURL: URL(fileURLWithPath: "/missing.app"))
     #expect(text.contains("Privilege mode: Community"))
@@ -628,10 +708,10 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
 }
 
 @Test func buildVersionAndDiagnosticsMetadataPropagate() throws {
-    #expect(BuildMetadata.displayVersion == "0.6.1 (1)")
+    #expect(BuildMetadata.displayVersion == "0.7.0 (1)")
     #expect(BuildMetadata.helperProtocolVersion == 1)
     let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .signedHelper, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
-    #expect(text.contains("App version: 0.6.1 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+    #expect(text.contains("App version: 0.7.0 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
     #expect(text.contains("Helper registration signing: Unsupported"))
 }
 
@@ -710,7 +790,7 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
 
 @Test func releaseCheckParsesVersionAndRejectsMalformedMetadata() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.6.1")
+    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.7.0")
     let malformed = try temporaryDirectory().appendingPathComponent("Version.env"); try Data("MARKETING_VERSION=bad!\n".utf8).write(to: malformed)
     #expect(try releaseLibrary("validate_version_metadata \"\(malformed.path)\"").0 != 0)
     #expect(try releaseLibrary("metadata_value /definitely/missing MARKETING_VERSION").0 != 0)
@@ -730,8 +810,24 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
             let displayName, productType, modelNumber, observationDate, cableObservation, scopeNote: String
             let results: Results; let timingObservation: TimingObservation
         }
+        struct NewerMacHardware: Decodable {
+            struct Results: Decodable { let discovery, automaticEnterDFU, dfuRediscovery, guiRestore, liveProgress, targetRestartVerification: String }
+            let displayName, productType, observationDate, restoreImage, portObservation, scopeNote: String
+            let results: Results
+        }
+        struct MultiDeviceHardware: Decodable {
+            let productType, observationDate, sequentialRestore, scopeNote: String
+            let deviceCount: Int
+        }
+        struct MobileCachedFirmwareAssignment: Decodable {
+            struct Results: Decodable { let exactCompatibleAssetAssigned, validatedManagedCacheReused, deviceRemainedUnselected, recoveryRestoreReadiness, explicitOperationSelectionRequired: String }
+            let productType, observationDate, restoreImage, scopeNote: String
+            let results: Results
+        }
         let appVersion, distributionMode, acceptanceDate: String
         let hardware: Hardware; let results: Results; let mobileHardware: MobileHardware; let iPadHardware: IPadHardware
+        let newerMacHardware: NewerMacHardware; let multiDeviceHardware: MultiDeviceHardware
+        let mobileCachedFirmwareAssignment: MobileCachedFirmwareAssignment
     }
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let value = try JSONDecoder().decode(Acceptance.self, from: Data(contentsOf: root.appendingPathComponent("Config/HardwareAcceptance.json")))
@@ -752,8 +848,20 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
     #expect(value.iPadHardware.timingObservation.dfuEnumerationSeconds == 17.170)
     #expect(value.iPadHardware.cableObservation.contains("does not establish that USB-A to Lightning is required"))
     #expect(value.iPadHardware.scopeNote.contains("Recovery-mode GUI Restore") && value.iPadHardware.scopeNote.contains("remain pending"))
+    #expect(value.newerMacHardware.productType == "Mac17,6")
+    #expect([value.newerMacHardware.results.discovery, value.newerMacHardware.results.automaticEnterDFU, value.newerMacHardware.results.dfuRediscovery, value.newerMacHardware.results.guiRestore, value.newerMacHardware.results.liveProgress, value.newerMacHardware.results.targetRestartVerification].allSatisfy { $0 == "PASS" })
+    #expect(value.newerMacHardware.restoreImage.contains("26.6.2 / 25G83"))
+    #expect(value.newerMacHardware.portObservation.contains("rightmost USB-C port on the left side"))
+    #expect(value.newerMacHardware.portObservation.contains("not a universal"))
+    #expect(value.multiDeviceHardware.productType == "iPad12,1"); #expect(value.multiDeviceHardware.deviceCount == 2)
+    #expect(value.multiDeviceHardware.sequentialRestore == "PASS")
+    #expect(value.mobileCachedFirmwareAssignment.productType == "iPad12,1")
+    #expect(value.mobileCachedFirmwareAssignment.restoreImage.contains("26.6.1 / 23G83"))
+    #expect([value.mobileCachedFirmwareAssignment.results.exactCompatibleAssetAssigned, value.mobileCachedFirmwareAssignment.results.validatedManagedCacheReused, value.mobileCachedFirmwareAssignment.results.deviceRemainedUnselected, value.mobileCachedFirmwareAssignment.results.recoveryRestoreReadiness, value.mobileCachedFirmwareAssignment.results.explicitOperationSelectionRequired].allSatisfy { $0 == "PASS" })
+    #expect(value.mobileCachedFirmwareAssignment.scopeNote.contains("No automatic download or Restore occurred"))
     let releaseCheck = try String(contentsOf: root.appendingPathComponent("scripts/release-check.sh"), encoding: .utf8)
     #expect(releaseCheck.contains("pass \"Hardware acceptance\"")); #expect(releaseCheck.contains("pass \"iPhone acceptance\"")); #expect(releaseCheck.contains("pass \"iPad acceptance\""))
+    #expect(releaseCheck.contains("pass \"Newer Mac acceptance\"")); #expect(releaseCheck.contains("pass \"Multi-device acceptance\"")); #expect(releaseCheck.contains("pass \"Mobile cache assignment\""))
     #expect(releaseCheck.contains("for key in recoveryDetection guiRestore")); #expect(releaseCheck.contains("for key in liveProgress targetRestartVerification"))
     #expect(releaseCheck.contains("Recovery-mode Restore accepted; progress/restart verification pending"))
 }

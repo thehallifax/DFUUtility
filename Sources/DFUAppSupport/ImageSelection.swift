@@ -46,6 +46,7 @@ public struct FirmwareReleaseKey: Hashable, Sendable {
     public let version: String
     public let build: String
     public let supportedDevices: [String]
+    public let mobileAssetIdentity: String
 
     public init(_ release: IPSWRelease) {
         platform = release.platform
@@ -57,6 +58,18 @@ public struct FirmwareReleaseKey: Hashable, Sendable {
         supportedDevices = release.platform == .macOS
             ? []
             : release.supportedDevices.map { $0.lowercased() }.sorted()
+        mobileAssetIdentity = release.platform == .macOS
+            ? ""
+            : release.checksum?.lowercased() ?? release.downloadURL.absoluteString
+    }
+}
+
+public extension IPSWRelease {
+    var conciseSupportedProducts: String? {
+        guard platform != .macOS, !supportedDevices.isEmpty else { return nil }
+        let products = supportedDevices.sorted()
+        if products.count <= 3 { return products.joined(separator: ", ") }
+        return "\(products[0]), \(products[1]) +\(products.count - 2) more"
     }
 }
 

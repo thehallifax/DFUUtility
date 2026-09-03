@@ -26,23 +26,29 @@ public struct IPSWCache: Sendable {
     }
     private func platformDirectory(for release: IPSWRelease) -> URL { release.platform == .macOS ? directory : directory.appendingPathComponent(release.platform.rawValue, isDirectory: true) }
     private func downloadsDirectory(for release: IPSWRelease) -> URL { release.platform == .macOS ? downloadsDirectory : platformDirectory(for: release).appendingPathComponent("downloads", isDirectory: true) }
-    public func releaseDirectory(for release: IPSWRelease) -> URL { platformDirectory(for: release).appendingPathComponent(safe(release.build), isDirectory: true) }
+    private func legacyReleaseDirectory(for release: IPSWRelease) -> URL { platformDirectory(for: release).appendingPathComponent(safe(release.build), isDirectory: true) }
+    public func releaseDirectory(for release: IPSWRelease) -> URL {
+        let build = legacyReleaseDirectory(for: release)
+        return release.platform == .macOS ? build : build.appendingPathComponent(mobileAssetIdentity(release), isDirectory: true)
+    }
     public func destination(for release: IPSWRelease) -> URL {
         if release.platform == .macOS { return releaseDirectory(for: release).appendingPathComponent("UniversalMac_\(safe(release.version))_\(safe(release.build))_Restore.ipsw") }
         let product = release.supportedDevices.count == 1 ? "\(safe(release.supportedDevices[0]))_" : ""
         return releaseDirectory(for: release).appendingPathComponent("\(product)\(release.platform.rawValue)_\(safe(release.version))_\(safe(release.build))_Restore.ipsw")
     }
-    public func partialURL(for release: IPSWRelease) -> URL { downloadsDirectory(for: release).appendingPathComponent("\(safe(release.build)).partial") }
-    private func partialMetadataURL(for release: IPSWRelease) -> URL { downloadsDirectory(for: release).appendingPathComponent("\(safe(release.build)).json") }
+    public func partialURL(for release: IPSWRelease) -> URL {
+        guard release.platform != .macOS else { return downloadsDirectory(for: release).appendingPathComponent("\(safe(release.build)).partial") }
+        let legacy = downloadsDirectory(for: release).appendingPathComponent("\(safe(release.build)).partial")
+        let legacyMetadata = legacy.deletingPathExtension().appendingPathExtension("json")
+        if metadata(at: legacyMetadata).map({ sameAsset($0, release) }) == true { return legacy }
+        return downloadsDirectory(for: release).appendingPathComponent("\(safe(release.build))-\(mobileAssetIdentity(release)).partial")
+    }
+    private func partialMetadataURL(for release: IPSWRelease) -> URL { partialURL(for: release).deletingPathExtension().appendingPathExtension("json") }
     public func validCachedURL(for release: IPSWRelease, validator: any IPSWValidating) throws -> URL? {
-        let url = destination(for: release)
-        guard cachedMetadataMatches(release), FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let url = cachedCandidate(for: release) else { return nil }
         return validator.validationResult(url, release: release, verifyChecksum: false) == .valid ? url : nil
     }
-    public func cachedURL(for release: IPSWRelease) -> URL? {
-        let url = destination(for: release)
-        return cachedMetadataMatches(release) && FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
+    public func cachedURL(for release: IPSWRelease) -> URL? { cachedCandidate(for: release) }
     public func commit(partial: URL, release: IPSWRelease) throws -> URL {
         let fm = FileManager.default, target = destination(for: release); try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }; try fm.moveItem(at: partial, to: target)
@@ -86,11 +92,16 @@ public struct IPSWCache: Sendable {
     }
     public func entries(validator: any IPSWValidating) throws -> [CachedIPSW] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }; let fm = FileManager.default
-        let roots = [directory, directory.appendingPathComponent(RestorePlatform.iOS.rawValue), directory.appendingPathComponent(RestorePlatform.iPadOS.rawValue)]
-        let folders = try roots.filter { fm.fileExists(atPath: $0.path) }.flatMap { try fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) }
-        return folders.compactMap { folder in
-            guard let data = try? Data(contentsOf: folder.appendingPathComponent("metadata.json")), let release = try? JSONDecoder().decode(IPSWRelease.self, from: data) else { return nil }
-            let url = destination(for: release), validation = validator.validationResult(url, release: release, verifyChecksum: false)
+        let metadataURLs: [URL] = {
+            guard let enumerator = fm.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return [] }
+            return enumerator.compactMap { item in
+                guard let url = item as? URL, url.lastPathComponent == "metadata.json", !url.pathComponents.contains("downloads") else { return nil }
+                return url
+            }
+        }()
+        return metadataURLs.compactMap { metadataURL in
+            guard let release = metadata(at: metadataURL), let url = cachedCandidate(for: release) else { return nil }
+            let validation = validator.validationResult(url, release: release, verifyChecksum: false)
             return CachedIPSW(release: release, url: url, validation: validation)
         }.sorted { $0.release.version.localizedStandardCompare($1.release.version) == .orderedDescending }
     }
@@ -104,18 +115,37 @@ public struct IPSWCache: Sendable {
         return removed
     }
     private func metadataData(for release: IPSWRelease) throws -> Data { let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return try encoder.encode(release) }
-    private func cachedMetadataMatches(_ release: IPSWRelease) -> Bool {
-        // macOS has one universal image per build. Mobile builds can contain
-        // several product-specific IPSWs at different URLs, so the metadata's
-        // authoritative product set must match before treating the build slot
-        // as a cache hit for a catalogue variant.
-        guard release.platform != .macOS else { return true }
-        let metadata = releaseDirectory(for: release).appendingPathComponent("metadata.json")
-        guard let data = try? Data(contentsOf: metadata), let stored = try? JSONDecoder().decode(IPSWRelease.self, from: data) else { return false }
-        return stored.platform == release.platform
-            && stored.version == release.version
-            && stored.build == release.build
-            && Set(stored.supportedDevices.map { $0.lowercased() }) == Set(release.supportedDevices.map { $0.lowercased() })
+    private func cachedCandidate(for release: IPSWRelease) -> URL? {
+        let current = releaseDirectory(for: release), legacy = legacyReleaseDirectory(for: release)
+        for folder in current == legacy ? [current] : [current, legacy] {
+            guard metadata(at: folder.appendingPathComponent("metadata.json")).map({ sameAsset($0, release) }) == true else { continue }
+            if let image = cachedImage(in: folder, release: release) { return image }
+        }
+        return nil
+    }
+    private func cachedImage(in folder: URL, release: IPSWRelease) -> URL? {
+        let expected = folder.appendingPathComponent(destinationFilename(for: release))
+        if FileManager.default.fileExists(atPath: expected.path) { return expected }
+        return (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))?.first { $0.pathExtension.lowercased() == "ipsw" }
+    }
+    private func destinationFilename(for release: IPSWRelease) -> String {
+        if release.platform == .macOS { return "UniversalMac_\(safe(release.version))_\(safe(release.build))_Restore.ipsw" }
+        let product = release.supportedDevices.count == 1 ? "\(safe(release.supportedDevices[0]))_" : ""
+        return "\(product)\(release.platform.rawValue)_\(safe(release.version))_\(safe(release.build))_Restore.ipsw"
+    }
+    private func metadata(at url: URL) -> IPSWRelease? {
+        (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(IPSWRelease.self, from: $0) }
+    }
+    private func sameAsset(_ lhs: IPSWRelease, _ rhs: IPSWRelease) -> Bool {
+        lhs.platform == rhs.platform && lhs.version == rhs.version && lhs.build == rhs.build
+            && lhs.downloadURL == rhs.downloadURL && lhs.checksum?.lowercased() == rhs.checksum?.lowercased()
+            && Set(lhs.supportedDevices.map { $0.lowercased() }) == Set(rhs.supportedDevices.map { $0.lowercased() })
+    }
+    private func mobileAssetIdentity(_ release: IPSWRelease) -> String {
+        if let checksum = release.checksum?.lowercased(), !checksum.isEmpty { return safe(checksum) }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in release.downloadURL.absoluteString.utf8 { hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211 }
+        return String(hash, radix: 16)
     }
     private func fileSize(_ url: URL) -> Int64 { ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0 }
     private func safe(_ input: String) -> String { String(input.map { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" ? $0 : "-" }) }

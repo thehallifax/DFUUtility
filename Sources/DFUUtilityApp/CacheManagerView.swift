@@ -70,6 +70,9 @@ struct CacheManagerView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("\(entry.release.platform.displayName) \(entry.release.version)").font(.headline)
                     Text("Build \(entry.release.build) · \(format(entry.sizeBytes))\(entry.state == .partial ? " partial" : "")").foregroundStyle(.secondary)
+                    if let products = entry.release.conciseSupportedProducts {
+                        Text("Compatible products: \(products)").font(.caption).foregroundStyle(.secondary).help(entry.release.supportedDevices.sorted().joined(separator: ", "))
+                    }
                     stateLabel(entry.state)
                     if let failure = entry.validationFailure { Text("\(failure.predicate.rawValue): \(failure.reason)").font(.caption).foregroundStyle(.red) }
                 }

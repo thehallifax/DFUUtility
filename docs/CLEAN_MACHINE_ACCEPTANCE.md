@@ -23,6 +23,8 @@ Perform this on a Mac that has never run DFUUtility. Do not run Restore during t
 6. Save Diagnostics and view the operation log.
 7. Stop. Do not click Revive or Restore unless separately intended and authorized.
 
+If macvdmtool reports that it did not receive the final VDM reply after reaching DBMa, do not assume either success or failure of the physical transition. Wait briefly and click **Refresh**. If the target remains absent, reconnect the cable and consult Apple's model-specific DFU-port guidance. On the tested `Mac17,6`, entry used the rightmost USB-C port on the left side and post-transition DFU enumeration required moving to the other left-side port; do not generalize that observation to every newer MacBook.
+
 ## Upgrade acceptance
 
 1. With v1 registered, quit v1 and replace `/Applications/DFUUtility.app` with a same-Team signed v2.
@@ -49,4 +51,5 @@ Relaunching should show Not registered. The script must not delete the app, IPSW
 - **Signature or Team ID mismatch:** do not override it; rebuild all nested code with the same Developer ID identity.
 - **Upgrade required:** use Set Up DFU Helper; if a development ad-hoc build was replaced, unregister the old build first.
 - **No target:** verify the DFU port, cable, host architecture, and Configurator installation.
+- **No final VDM reply:** the target may already be in DFU. Wait briefly and Refresh; if still absent, reconnect the cable and check Apple's model-specific DFU-port guidance before retrying Enter DFU.
 - **Authorization cancelled:** retry; the app must remain usable.

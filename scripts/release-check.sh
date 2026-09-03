@@ -194,7 +194,36 @@ if [ "$ipad_product" = iPad7,11 ] && [ "$ipad_normal" = PASS ] && [ "$ipad_dfu" 
 else
   fail "iPad acceptance" "iPad7,11 status is missing or overclaims untested milestones"
 fi
-warn "Hardware coverage" "Mac14,2 and iPhone7,2 accepted end-to-end; iPad7,11 Recovery-mode Restore accepted with progress/restart verification pending; broader coverage pending"
+newer_mac_product=$(plutil -extract newerMacHardware.productType raw "$acceptance" 2>/dev/null || true)
+newer_mac_ok=true
+for key in discovery automaticEnterDFU dfuRediscovery guiRestore liveProgress targetRestartVerification; do
+  [ "$(plutil -extract "newerMacHardware.results.$key" raw "$acceptance" 2>/dev/null || true)" = PASS ] || newer_mac_ok=false
+done
+newer_mac_port=$(plutil -extract newerMacHardware.portObservation raw "$acceptance" 2>/dev/null || true)
+if [ "$newer_mac_product" = Mac17,6 ] && [ "$newer_mac_ok" = true ] && echo "$newer_mac_port" | grep -Fq "not a universal"; then
+  pass "Newer Mac acceptance" "Mac17,6 — end-to-end with tested port-change caveat"
+else
+  fail "Newer Mac acceptance" "Mac17,6 acceptance or scoped port guidance is incomplete"
+fi
+multi_product=$(plutil -extract multiDeviceHardware.productType raw "$acceptance" 2>/dev/null || true)
+multi_count=$(plutil -extract multiDeviceHardware.deviceCount raw "$acceptance" 2>/dev/null || true)
+multi_restore=$(plutil -extract multiDeviceHardware.sequentialRestore raw "$acceptance" 2>/dev/null || true)
+if [ "$multi_product" = iPad12,1 ] && [ "$multi_count" = 2 ] && [ "$multi_restore" = PASS ]; then
+  pass "Multi-device acceptance" "two iPad12,1 Recovery targets — sequential Restore"
+else
+  fail "Multi-device acceptance" "two-device iPad12,1 sequential Restore acceptance missing"
+fi
+mobile_cache_product=$(plutil -extract mobileCachedFirmwareAssignment.productType raw "$acceptance" 2>/dev/null || true)
+mobile_cache_ok=true
+for key in exactCompatibleAssetAssigned validatedManagedCacheReused deviceRemainedUnselected recoveryRestoreReadiness explicitOperationSelectionRequired; do
+  [ "$(plutil -extract "mobileCachedFirmwareAssignment.results.$key" raw "$acceptance" 2>/dev/null || true)" = PASS ] || mobile_cache_ok=false
+done
+if [ "$mobile_cache_product" = iPad12,1 ] && [ "$mobile_cache_ok" = true ]; then
+  pass "Mobile cache assignment" "iPad12,1 — exact validated cache reused; operation selection remained explicit"
+else
+  fail "Mobile cache assignment" "physical cached-compatible mobile firmware assignment acceptance missing"
+fi
+warn "Hardware coverage" "Mac14,2, Mac17,6, and iPhone7,2 accepted end-to-end; iPad7,11 progress/restart verification pending; two-device iPad12,1 sequential Restore accepted; broader coverage pending"
 
 result=$(release_result "$failures" "$warnings" "$mode")
 echo

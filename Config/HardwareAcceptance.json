@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "acceptanceDate": "2026-08-22",
-  "appVersion": "0.6.1",
+  "acceptanceDate": "2026-09-03",
+  "appVersion": "0.7.0",
   "distributionMode": "Community",
   "hardware": {
     "displayName": "MacBook Air M2",
@@ -61,5 +61,41 @@
     "cableObservation": "The current physical-Home timing profile succeeded. This observation does not establish that USB-A to Lightning is required; alternate cable advice remains troubleshooting guidance only.",
     "scopeNote": "Real Normal and Recovery detection, guided same-ECID DFU, compatible iPadOS discovery, GUI download, IPSW validation, and Recovery-mode GUI Restore have passed. Live Restore progress, restart verification, and full end-to-end acceptance remain pending."
   },
-  "scopeNote": "Mac14,2 and iPhone7,2 are accepted end-to-end. iPad7,11 has passed Normal and Recovery detection, guided same-ECID DFU, firmware discovery, GUI download, validation, and Recovery-mode GUI Restore; live progress, restart verification, and full end-to-end acceptance remain pending. Broader Apple Silicon, Intel T2, iPhone, and iPad coverage remains pending."
+  "newerMacHardware": {
+    "displayName": "Newer Apple Silicon MacBook",
+    "productType": "Mac17,6",
+    "observationDate": "2026-09-03",
+    "restoreImage": "macOS 26.6.2 / 25G83",
+    "results": {
+      "discovery": "PASS",
+      "automaticEnterDFU": "PASS",
+      "dfuRediscovery": "PASS",
+      "guiRestore": "PASS",
+      "liveProgress": "PASS",
+      "targetRestartVerification": "PASS"
+    },
+    "portObservation": "On the tested Mac17,6, automatic DFU entry required the rightmost USB-C port on the left side. After transition, moving the cable to the other left-side USB-C port allowed the already-DFU target to enumerate immediately. This is a tested-hardware observation, not a universal M4/M5-era MacBook port mapping; consult Apple's model-specific DFU-port guidance.",
+    "scopeNote": "Mac17,6 passed discovery, automatic Enter DFU, DFU rediscovery with the recorded port-change caveat, macOS Restore, structured progress, and verified restart to Normal."
+  },
+  "multiDeviceHardware": {
+    "productType": "iPad12,1",
+    "deviceCount": 2,
+    "observationDate": "2026-09-03",
+    "sequentialRestore": "PASS",
+    "scopeNote": "Two simultaneously connected iPad12,1 Recovery targets completed the explicitly selected, ECID-targeted sequential Restore workflow."
+  },
+  "mobileCachedFirmwareAssignment": {
+    "productType": "iPad12,1",
+    "observationDate": "2026-09-03",
+    "restoreImage": "iPadOS 26.6.1 / 23G83 for iPad12,1 and iPad12,2",
+    "results": {
+      "exactCompatibleAssetAssigned": "PASS",
+      "validatedManagedCacheReused": "PASS",
+      "deviceRemainedUnselected": "PASS",
+      "recoveryRestoreReadiness": "PASS",
+      "explicitOperationSelectionRequired": "PASS"
+    },
+    "scopeNote": "A replacement physical iPad12,1 connected in Recovery received the exact validated managed-cache firmware assignment without invoking Use Latest Compatible Firmware, immediately became Ready to restore, and remained unselected until the user explicitly selected it. No automatic download or Restore occurred."
+  },
+  "scopeNote": "Mac14,2, Mac17,6, and iPhone7,2 are accepted end-to-end. iPad7,11 has passed Normal and Recovery detection, guided same-ECID DFU, firmware discovery, GUI download, validation, and Recovery-mode GUI Restore; live progress, restart verification, and full end-to-end acceptance remain pending. Two simultaneously connected iPad12,1 Recovery targets passed sequential Restore, and replacement-iPad exact cached firmware auto-assignment passed while preserving explicit operation selection. Broader Apple Silicon, Intel T2, iPhone, and iPad coverage remains pending."
 }

@@ -4,7 +4,7 @@ DFUUtility is an open-source native macOS utility for entering supported Macs in
 
 ![DFUUtility multi-device workflow](docs/images/multiple-devices.png)
 
-Version 0.6.1 is a focused patch release improving post-operation state recovery, Mac Enter DFU error handling, and Community installation. Community builds are local and ad-hoc signed; no paid Apple Developer account is required.
+Version 0.7.0 adds independent multi-device sessions, sequential batch operations, product-specific mobile firmware/cache handling, exact cached-firmware assignment, and improved Mac DFU diagnostics. Community builds are local and ad-hoc signed; no paid Apple Developer account is required.
 
 ## Features
 
@@ -27,6 +27,7 @@ Version 0.6.1 is a focused patch release improving post-operation state recovery
 - Resume downloads, validate integrity and archive structure, and reuse a platform-separated cache.
 - Inspect storage, reveal files, resume partials, and confirm removal in **Manage Downloads…**.
 - Select a local IPSW without placing it under DFUUtility's cache management.
+- Automatically assign an exact compatible validated cached IPSW to a newly discovered iPhone or iPad without selecting the device or starting an operation.
 
 ### Safety
 
@@ -122,6 +123,10 @@ The flags may be combined. In-app and shell updates are intended for clean end-u
 4. Enter DFU: Mac entry is initiated by the app; supported iPhone/iPad entry follows the guided physical-button assistant.
 5. Choose Revive where supported, or confirm Restore.
 
+If Mac Enter DFU reports that the final VDM reply was not received, the target may already have transitioned. Wait briefly and click **Refresh**. If it remains absent, reconnect the cable. USB-C/DFU port behavior varies by model, so consult [Apple's model-specific DFU-port guidance](https://support.apple.com/en-us/108900) rather than assuming every MacBook uses the same port.
+
+On the physically tested `Mac17,6`, automatic DFU entry required the rightmost USB-C port on the left side. After transition, the already-DFU target enumerated immediately when the cable was moved to the other left-side USB-C port. This is an observation for that tested machine, not a universal M4/M5-era port map.
+
 > **Restore erases the target device.** Back up recoverable data first. Restore does not bypass Activation Lock, ownership, enrollment, or setup requirements. Revive is not a backup and offers no data-preservation guarantee.
 
 ## Tested hardware
@@ -129,10 +134,13 @@ The flags may be combined. In-app and shell updates are intended for clean end-u
 | Device | Product | Detection | Guided DFU | Restore/Revive |
 | --- | --- | --- | --- | --- |
 | MacBook Air M2 | `Mac14,2` | Normal/DFU: PASS | GUI same-ECID DFU: PASS | Restore and Revive: PASS |
+| Newer Apple Silicon MacBook | `Mac17,6` | Normal/DFU: PASS | Automatic DFU: PASS; tested port-change caveat | Restore, progress, and restart: PASS |
 | iPhone 6 | `iPhone7,2` | Normal/Recovery/DFU: PASS | Same-ECID DFU: PASS | End-to-end Restore: PASS |
 | iPad (7th generation) Wi-Fi | `iPad7,11` | Normal/Recovery/DFU: PASS | Same-ECID DFU: PASS | Recovery-mode Restore: PASS; progress/restart verification pending |
 
 For `iPad7,11`, compatible iPadOS discovery, GUI download, IPSW validation, and Recovery-mode GUI Restore passed on real hardware. Live Restore progress, restart verification, and full end-to-end acceptance remain pending. The authoritative, deliberately scoped record is [Config/HardwareAcceptance.json](Config/HardwareAcceptance.json).
+
+Two simultaneously connected `iPad12,1` Recovery targets also passed the explicitly selected, ECID-targeted sequential Restore workflow. A subsequently connected replacement `iPad12,1` automatically received the exact validated cached iPadOS 26.6.1 / 23G83 asset and became Restore-ready while remaining unselected until explicit user action.
 
 ## Older Lightning troubleshooting
 
@@ -176,7 +184,7 @@ Apple Configurator's `cfgutil` remains required for device discovery, Restore, a
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.6.1 release notes](docs/RELEASE_NOTES_0.6.1.md) for this patch and the [0.6.0 release notes](docs/RELEASE_NOTES_0.6.0.md) for the underlying feature release.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.7.0 release notes](docs/RELEASE_NOTES_0.7.0.md) for this release and the [0.6.1 release notes](docs/RELEASE_NOTES_0.6.1.md) for the preceding patch.
 
 ## License
 

@@ -13,6 +13,12 @@ public enum AppRestoreState: Equatable {
     case failed(String)
 }
 
+private enum LatestCompatibleFirmwareResolution {
+    case unavailable
+    case ambiguous
+    case resolved(release: IPSWRelease, cachedURL: URL?)
+}
+
 public struct DFUFailurePresentation: Equatable, Sendable {
     public let summary: String
     public let recoverySuggestion: String?
@@ -344,6 +350,7 @@ public final class AppModel: ObservableObject {
         return MobileDFUInstructionProfile.profile(for: target) == nil ? .unsupportedMobileProduct : .guidedPhysicalButtons
     }
     public var isFirmwareLibraryMode: Bool { target == nil }
+    public var showsSessionPresentation: Bool { !deviceSessions.sessions.isEmpty }
     public var targetRestorePlatform: RestorePlatform { target?.family.restorePlatform ?? browsePlatform }
     public var restoreSectionTitle: String { isFirmwareLibraryMode ? "Firmware Library" : "\(targetRestorePlatform.displayName) Restore" }
     public var manageDownloadsAvailable: Bool { true }
@@ -486,14 +493,14 @@ public final class AppModel: ObservableObject {
             }
             let compatible = target?.restoreProductType.flatMap { product in availableReleases.first { $0.supportedDevices.contains(product) } }
             if selectedRelease == nil || (target?.restoreProductType != nil && !selectedImageMatchesTarget) { selectedRelease = compatible ?? (target == nil ? availableReleases.first : nil) }
-            catalogueState = .loaded; refreshSelectedCacheState(); refreshImageChoices()
+            catalogueState = .loaded; refreshSelectedCacheState(syncSession: false); refreshImageChoices()
         } catch {
             catalogueErrorMessage = "Apple’s restore catalogue could not be reached. \(error.localizedDescription)"
             catalogueReleases = []
             await loadManagedCache(knownReleases: [])
             rebuildAvailableReleases()
             if selectedRelease == nil, imageURL == nil { selectedRelease = availableReleases.first }
-            refreshSelectedCacheState(); refreshImageChoices()
+            refreshSelectedCacheState(syncSession: false); refreshImageChoices()
             catalogueState = .failed(error.localizedDescription)
             if imageURL == nil { presentedError = "Unable to load Apple restore images.\nCheck your internet connection and try again." }
         }
@@ -518,14 +525,17 @@ public final class AppModel: ObservableObject {
         do {
             let discovery = discovery
             let discovered = try await Self.discoverTargets(using: discovery, attempts: targetDiscoveryAttempts)
+            let existingSessionIDs = Set(deviceSessions.sessions.map(\.id))
             targetDevices = discovered
             deviceSessions.reconcile(discovered)
+            let newSessionIDs = Set(deviceSessions.sessions.map(\.id)).subtracting(existingSessionIDs)
             if targetDevices.count == 1 { selectedTargetECID = targetDevices[0].ecid }
             else if !targetDevices.contains(where: { $0.ecid == selectedTargetECID }) { selectedTargetECID = nil }
             let targetChanged = previousContext != target.map(TargetContext.init)
             if targetChanged { resetTargetSpecificImageState() }
             refreshImageChoices()
             if targetChanged { await refreshCatalogue() }
+            await autoAssignCachedFirmware(to: newSessionIDs)
         } catch { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
         do {
             let diagnostics = diagnostics, targets = targetDevices
@@ -588,19 +598,66 @@ public final class AppModel: ObservableObject {
         deviceSessions.applySharedFirmware(release: selectedRelease, url: imageURL, to: Set(deviceSessions.selectedSessions.map(\.id)))
     }
     public func useLatestCompatibleFirmwareForSelectedSessions() async {
-        for snapshot in deviceSessions.selectedSessions {
+        let selectedSessions = deviceSessions.selectedSessions
+        var assignments: [(release: IPSWRelease, url: URL?)] = []
+        for snapshot in selectedSessions {
             do {
-                let releases = try await ipswService.availableImages(for: snapshot.device)
-                guard let product = snapshot.device.restoreProductType,
-                      let release = AppleIPSWService.sortNewestFirst(releases).first(where: { $0.supportedDevices.contains(product) }) else {
+                switch try await latestCompatibleFirmware(for: snapshot.device) {
+                case .unavailable:
                     deviceSessions.setFirmware(for: snapshot.id, release: nil, url: nil, validation: .incompatible("No compatible Apple restore image was found for \(snapshot.device.restoreProductType ?? "this product")."))
-                    continue
+                case .ambiguous:
+                    deviceSessions.setFirmware(for: snapshot.id, release: nil, url: nil, validation: .incompatible("Multiple latest compatible Apple restore images were found for \(snapshot.device.restoreProductType ?? "this product"); choose firmware explicitly."))
+                case .resolved(let release, let url):
+                    deviceSessions.setFirmware(for: snapshot.id, release: release, url: url, validation: url == nil ? .selected : .validated)
+                    assignments.append((release, url))
                 }
-                let url = try? cache.validCachedURL(for: release, validator: validator)
-                deviceSessions.setFirmware(for: snapshot.id, release: release, url: url, validation: url == nil ? .selected : .validated)
             } catch {
                 deviceSessions.setFirmware(for: snapshot.id, release: nil, url: nil, validation: .invalid(error.localizedDescription))
             }
+        }
+        guard assignments.count == selectedSessions.count, let first = assignments.first else {
+            if assignments.isEmpty, let product = selectedSessions.first?.device.restoreProductType {
+                presentedError = "No compatible Apple restore image was found for \(product)."
+            }
+            return
+        }
+        let key = FirmwareReleaseKey(first.release)
+        guard assignments.allSatisfy({ FirmwareReleaseKey($0.release) == key }) else { return }
+        selectedRelease = first.release
+        manualImageURL = nil
+        imageState = first.url.map(ImageState.ready) ?? .none
+        refreshImageChoices()
+    }
+
+    private func latestCompatibleFirmware(for device: DFUDevice) async throws -> LatestCompatibleFirmwareResolution {
+        guard let product = device.restoreProductType else { return .unavailable }
+        let compatible = AppleIPSWService.sortNewestFirst(try await ipswService.availableImages(for: device)).filter {
+            !$0.supportedDevices.isEmpty && $0.supportedDevices.contains(product)
+        }
+        guard let latest = compatible.first else { return .unavailable }
+        let latestVariants = compatible.filter { $0.version == latest.version && $0.build == latest.build }
+        let identities = Set(latestVariants.map(FirmwareReleaseKey.init))
+        guard identities.count == 1 else { return .ambiguous }
+        let release = latestVariants[0]
+        let url = validatedCacheEntries[FirmwareReleaseKey(release)]?.url
+            ?? (try? cache.validCachedURL(for: release, validator: validator))
+        return .resolved(release: release, cachedURL: url)
+    }
+
+    private func autoAssignCachedFirmware(to sessionIDs: Set<DeviceSessionID>) async {
+        for id in sessionIDs {
+            guard let session = deviceSessions.sessions.first(where: { $0.id == id }),
+                  session.device.family == .iPhone || session.device.family == .iPad,
+                  session.selectedRelease == nil, session.selectedImageURL == nil,
+                  session.firmwareState == .unselected else { continue }
+            guard case .resolved(let release, let cachedURL) = try? await latestCompatibleFirmware(for: session.device),
+                  let cachedURL else { continue }
+            // Recheck after the asynchronous catalogue lookup so a user choice
+            // made while it was in flight is never overwritten.
+            guard let current = deviceSessions.sessions.first(where: { $0.id == id }),
+                  current.selectedRelease == nil, current.selectedImageURL == nil,
+                  current.firmwareState == .unselected else { continue }
+            deviceSessions.setFirmware(for: id, release: release, url: cachedURL, validation: .validated)
         }
     }
     public func startBatchRestore() {
@@ -635,7 +692,10 @@ public final class AppModel: ObservableObject {
     }
 
     private func resetTargetSpecificImageState() {
-        downloadTask?.cancel(); downloadTask = nil
+        // Keep the cancelled task registered until its downloader unwinds and
+        // closes the partial-file handle. A second download cannot start in
+        // that brief interval.
+        downloadTask?.cancel()
         availableReleases = []; selectedRelease = nil; pendingRelease = nil
         manualImageURL = nil; imageState = .none; imageChoices = []
         downloadState = .idle; catalogueState = .idle; catalogueErrorMessage = nil
@@ -667,15 +727,15 @@ public final class AppModel: ObservableObject {
     }
     public func selectRelease(_ release: IPSWRelease) { selectedRelease = release; refreshSelectedCacheState(); refreshImageChoices() }
 
-    public func refreshSelectedCacheState() {
+    public func refreshSelectedCacheState(syncSession: Bool = true) {
         guard let release = selectedRelease else { if imageURL == nil { imageState = .none }; refreshImageChoices(); return }
-        if let entry = validatedCacheEntries[FirmwareReleaseKey(release)] { imageState = .ready(entry.url); syncCurrentSessionFirmware(); return }
-        if let url = try? cache.validCachedURL(for: release, validator: validator) { imageState = .ready(url); syncCurrentSessionFirmware(); return }
-        if cache.cachedURL(for: release) != nil { imageState = .invalid("The cached image is no longer valid. Download it again."); syncCurrentSessionFirmware(); return }
+        if let entry = validatedCacheEntries[FirmwareReleaseKey(release)] { imageState = .ready(entry.url); if syncSession { syncCurrentSessionFirmware() }; return }
+        if let url = try? cache.validCachedURL(for: release, validator: validator) { imageState = .ready(url); if syncSession { syncCurrentSessionFirmware() }; return }
+        if cache.cachedURL(for: release) != nil { imageState = .invalid("The cached image is no longer valid. Download it again."); if syncSession { syncCurrentSessionFirmware() }; return }
         let partial = cache.partialURL(for: release)
         let size = ((try? FileManager.default.attributesOfItem(atPath: partial.path)[.size]) as? NSNumber)?.int64Value ?? 0
         imageState = size > 0 ? .partial(size) : .none
-        syncCurrentSessionFirmware()
+        if syncSession { syncCurrentSessionFirmware() }
     }
 
     public func beginDownload() {
@@ -706,7 +766,7 @@ public final class AppModel: ObservableObject {
 
     public func cancelDownload() {
         guard downloadTask != nil else { return }
-        downloadTask?.cancel(); downloadTask = nil; downloadState = .cancelled; refreshSelectedCacheState(); refreshImageChoices()
+        downloadTask?.cancel(); downloadState = .cancelled; refreshSelectedCacheState(); refreshImageChoices()
     }
 
     public func refreshManagedCache() async {
