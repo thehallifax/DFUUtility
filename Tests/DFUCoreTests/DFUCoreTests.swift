@@ -378,6 +378,34 @@ private func mobileRestoreCommand(family: AppleDeviceFamily, state: DeviceState,
     #expect(report.isFundamentallyUsable); #expect(!report.setupComplete); #expect(report.status.targets.isEmpty)
 }
 
+@Test func accessoryConnectionReadinessIsHonestlyUnknownAndDeterministic() {
+    let first = AccessoryConnectionReadiness(), second = AccessoryConnectionReadiness()
+    #expect(first == second)
+    #expect(first.policy == .notReliablyReadable)
+    #expect(first.detectedState.contains("does not provide DFUUtility a supported way to read"))
+    #expect(!first.detectedState.localizedCaseInsensitiveContains("always allow"))
+    #expect(first.diagnosticLines.contains { $0.contains("Privacy & Security → Accessories") })
+    #expect(first.diagnosticLines.contains { $0.contains("Automatically allow when unlocked") })
+}
+
+@Test func accessoryReadinessImplementationHasNoSecurityMutationPath() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let source = try String(contentsOf: root.appendingPathComponent("Sources/DFUCore/AccessoryConnectionReadiness.swift"), encoding: .utf8)
+    for forbidden in ["defaults write", "UserDefaults", "Process(", "osascript", "NSWorkspace", "openURL", "AuthorizationExecute"] {
+        #expect(!source.contains(forbidden))
+    }
+}
+
+@Test func detailedDiagnosticsRetainExistingFactsAndReportAccessoryPolicyAsUnreadable() {
+    let host = HostStatus(isAppleSilicon: true, macOSVersion: "26.6", macVDMToolPath: URL(fileURLWithPath: "/tool"), cfgutilPath: URL(fileURLWithPath: "/cfgutil"), macVDMToolSource: .bundled)
+    let report = DoctorReport(status: UtilityStatus(host: host, targets: []), configuratorPresent: true, cacheDirectory: URL(fileURLWithPath: "/cache"), cacheWritable: true, restoreSupported: true)
+    let text = AcceptanceDiagnostics.render(report: report, privilegeMode: .community, helperState: .notRegistered, appURL: URL(fileURLWithPath: "/missing.app"))
+    #expect(text.contains("Apple Configurator: Available")); #expect(text.contains("cfgutil: /cfgutil")); #expect(text.contains("macvdmtool: /tool"))
+    #expect(text.contains("Accessory Connections: Not available"))
+    #expect(text.contains("does not provide DFUUtility a supported way to read this setting"))
+    #expect(!text.contains("Accessory Connections: Ready"))
+}
+
 @Test func liveAppleCatalogueOptIn() async throws {
     guard ProcessInfo.processInfo.environment["DFU_LIVE_TESTS"] == "1" else { return }
     let releases = try await AppleIPSWCatalogue().releases(); #expect(!releases.isEmpty); #expect(releases.allSatisfy { $0.downloadURL.host == "updates.cdn-apple.com" })

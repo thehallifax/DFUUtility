@@ -17,6 +17,7 @@ struct DiagnosticsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Diagnostics").font(.title.bold())
             Text("Detailed local diagnostics are shown below. Copy and Save create a sanitized report suitable for sharing.").font(.caption).foregroundStyle(.secondary)
+            accessoryReadiness
             ScrollView { Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
             if let confirmation { Text(confirmation).font(.caption).foregroundStyle(.secondary).accessibilityLabel(confirmation) }
             ViewThatFits(in: .horizontal) {
@@ -27,6 +28,24 @@ struct DiagnosticsView: View {
         .alert("Unable to Save Diagnostics", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
             Button("OK") { saveError = nil }
         } message: { Text(saveError ?? "The sanitized diagnostics could not be saved.") }
+    }
+
+    private var accessoryReadiness: some View {
+        let readiness = AccessoryConnectionReadiness()
+        return GroupBox("Host Readiness") {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Accessory Connections", systemImage: "cable.connector")
+                    .font(.headline)
+                Text(readiness.detectedState).font(.caption).foregroundStyle(.secondary)
+                Text("Check: Privacy & Security → Accessories → Allow accessories to connect")
+                    .font(.caption)
+                Text("For a dedicated, trusted DFU workstation, **Automatically allow when unlocked** reduces repeated approvals while keeping authorization restricted when the Mac is locked.")
+                    .font(.caption)
+                Text("**Always allow** reduces prompts further, but permits new wired accessories without individual approval. Consider it only for a physically controlled technician bench, not as a blanket recommendation for a personal Mac.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     @ViewBuilder private var actionButtons: some View {

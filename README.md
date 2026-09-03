@@ -129,6 +129,12 @@ On the physically tested `Mac17,6`, automatic DFU entry required the rightmost U
 
 > **Restore erases the target device.** Back up recoverable data first. Restore does not bypass Activation Lock, ownership, enrollment, or setup requirements. Revive is not a backup and offers no data-preservation guarantee.
 
+### Dedicated DFU workstations
+
+On an Apple-silicon Mac laptop, macOS may require approval before a newly connected wired accessory can communicate. DFUUtility cannot reliably read or change this policy. For a trusted technician workstation, review **System Settings → Privacy & Security → Accessories → Allow accessories to connect**. **Automatically allow when unlocked** can reduce repeated prompts while retaining protection when the Mac is locked. **Always allow** reduces prompts further but allows new wired accessories without individual approval, so reserve it for a physically controlled dedicated bench rather than a normal personal Mac.
+
+See [Dedicated DFU host setup](docs/DEDICATED_DFU_HOST.md) for cable, model-specific DFU-port, security, MDM, and trust/pairing distinctions.
+
 ## Tested hardware
 
 | Device | Product | Detection | Guided DFU | Restore/Revive |

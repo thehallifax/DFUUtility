@@ -190,8 +190,18 @@ private let noOpLogger = AppMockLogger()
     let text = ShareableDiagnostics.render(report: report, privilegeMode: .community, cacheEntries: [], updateState: .current, updateSourceHealth: "Recorded source available", operationState: .completed("Sensitive operation output"), operationLogAvailable: true)
     for secret in ["0xSENSITIVE-ECID", "SENSITIVE-SERIAL", "SENSITIVE-UDID", "private", "/Users/"] { #expect(!text.contains(secret)) }
     #expect(text.contains("Privilege mode: Community")); #expect(text.contains("cfgutil: Available")); #expect(text.contains("macvdmtool: Available (Bundled)"))
+    #expect(text.contains("Accessory Connections: Not available")); #expect(text.contains("Privacy & Security → Accessories"))
+    #expect(!text.contains("Accessory Connections: Ready"))
     #expect(text.contains("family iPhone, state Recovery, product iPhone15,2, stable identity Yes"))
     #expect(text.contains("Firmware cache: 0 item(s)")); #expect(text.contains("Update source: Recorded source available; Healthy; current")); #expect(text.contains("Most recent operation: Completed")); #expect(text.contains("Operation log available: Yes"))
+}
+
+@Test func diagnosticsViewPresentsAccessoryReadinessWithoutSettingsAutomation() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let content = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/DiagnosticsView.swift"), encoding: .utf8)
+    #expect(content.contains("Host Readiness")); #expect(content.contains("Accessory Connections"))
+    #expect(content.contains("Automatically allow when unlocked")); #expect(content.contains("Always allow"))
+    #expect(!content.contains("NSWorkspace")); #expect(!content.contains("osascript")); #expect(!content.contains("Process("))
 }
 
 @Test @MainActor func missingCfgutilShowsSetupRequirementOnlyWhenActuallyUnavailable() async {

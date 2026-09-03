@@ -16,7 +16,7 @@ public enum ShareableDiagnostics {
             "App version: \(BuildMetadata.displayVersion)",
             "Architecture: \(architecture)",
             "Privilege mode: \(privilegeMode == .community ? "Community" : "Signed helper")"
-        ]
+        ] + AccessoryConnectionReadiness().diagnosticLines
         if let report {
             lines += [
                 "macOS: \(report.status.host.macOSVersion)",

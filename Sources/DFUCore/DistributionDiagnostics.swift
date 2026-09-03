@@ -32,7 +32,7 @@ public enum AcceptanceDiagnostics {
             "App hardened runtime: \(app.hardenedRuntime ? "Yes" : "No")", "App signing mode: \(app.teamIdentifier == nil ? "Development / ad-hoc" : "Developer ID")",
             "Mach service: \(PrivilegedDFUConstants.machService)",
             "Helper signature: \(helper.isValid ? "Valid" : "Invalid/Unavailable")", "Helper Team ID: \(helper.teamIdentifier ?? "Ad hoc / unavailable")", "macvdmtool revision: \(BuildMetadata.macVDMToolRevision)"
-        ] + helperDetails
+        ] + helperDetails + AccessoryConnectionReadiness().diagnosticLines
         if let appTeam = app.teamIdentifier, let helperTeam = helper.teamIdentifier, appTeam == helperTeam {
             lines.append("Helper registration signing: Ready — matching Team ID \(appTeam)")
         } else {
