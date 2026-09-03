@@ -6,13 +6,13 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
-    @Environment(\.scenePhase) private var scenePhase
     @State private var showVersions = false
     @State private var showImporter = false
     @State private var showDiagnostics = false
     @State private var showAbout = false
     @State private var showMobileDFU = false
     @State private var showCacheManager = false
+    @State private var firmwareChooserSessionID: DeviceSessionID?
     @State private var demoTarget = "None"
 
     init(model: AppModel) {
@@ -45,11 +45,13 @@ struct ContentView: View {
             }
         }
         .task { await model.load() }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            await model.runContinuousDiscovery()
+        .onAppear { model.startBenchDiscovery() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.startBenchDiscovery() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in model.stopBenchDiscovery() }
+        .onDisappear { model.stopBenchDiscovery() }
+        .sheet(isPresented: $showVersions, onDismiss: { firmwareChooserSessionID = nil }) {
+            VersionPicker(model: model, isPresented: $showVersions, targetSessionID: firmwareChooserSessionID)
         }
-        .sheet(isPresented: $showVersions) { VersionPicker(model: model, isPresented: $showVersions) }
         .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, shareableText: model.shareableDiagnosticsText, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails).frame(minWidth: 520, minHeight: 460).padding() }
         .sheet(isPresented: $showAbout) { AboutView().frame(minWidth: 520, minHeight: 420).padding() }
         .sheet(isPresented: $showCacheManager) { CacheManagerView(model: model, isPresented: $showCacheManager) }
@@ -142,6 +144,10 @@ struct ContentView: View {
                     if let product = target.restoreProductType { LabeledContent("Product", value: product) }
                     if let serial = target.serialNumber { LabeledContent("Serial number", value: serial) }
                     if let ecid = target.ecid { LabeledContent("ECID", value: ecid) }
+                    if let session = model.detailedSession {
+                        Divider()
+                        firmwareForDevice(session)
+                    }
                 }
                 if model.isDemoMode && !model.isScreenshotPresentation {
                     Picker("Demo target", selection: $demoTarget) { ForEach(["None", "Mac Normal", "Mac Recovery", "Mac DFU", "iPhone 6 Normal", "iPhone 6 Recovery"], id: \.self) { Text($0) } }
@@ -176,6 +182,31 @@ struct ContentView: View {
         } label: { Label("Target Device", systemImage: model.target?.family == .mac ? "desktopcomputer" : "iphone") }
     }
 
+    @ViewBuilder private func firmwareForDevice(_ session: DeviceSession) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Firmware for this device").font(.headline)
+            if let release = session.selectedRelease {
+                Text("\(release.platform.displayName) \(release.version)").font(.title3.bold())
+                LabeledContent("Build", value: release.build)
+                Label(session.firmwareState == .validated ? "Downloaded and validated" : "Selected; download and validation required", systemImage: session.firmwareState == .validated ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(session.firmwareState == .validated ? .green : .secondary)
+            } else if let url = session.selectedImageURL {
+                Text("Local IPSW").font(.title3.bold())
+                Text(url.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("No firmware chosen").foregroundStyle(.secondary)
+            }
+            Button(session.selectedRelease == nil && session.selectedImageURL == nil ? "Choose Firmware…" : "Choose Different Firmware…") {
+                Task {
+                    await model.prepareFirmwareChooser(for: session.id)
+                    firmwareChooserSessionID = session.id
+                    showVersions = true
+                }
+            }
+            .help("Choose compatible firmware specifically for this device.")
+        }
+    }
+
     @ViewBuilder private var helperSetup: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("DFU Setup Required").font(.headline)
@@ -193,13 +224,11 @@ struct ContentView: View {
     private var restoreCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                if model.isFirmwareLibraryMode {
-                    Picker("Platform", selection: Binding(get: { model.browsePlatform }, set: { platform in Task { await model.selectBrowsePlatform(platform) } })) {
-                        ForEach(RestorePlatform.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    Text("Browse, download, and validate firmware without connecting a target. Compatibility is checked again against any device selected later.").font(.caption).foregroundStyle(.secondary)
+                Picker("Platform", selection: Binding(get: { model.browsePlatform }, set: { platform in Task { await model.selectBrowsePlatform(platform) } })) {
+                    ForEach(RestorePlatform.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
+                .pickerStyle(.segmented)
+                Text("Browse, download, and validate firmware independently of connected devices. A device’s firmware changes only when you choose it specifically.").font(.caption).foregroundStyle(.secondary)
                 Text("Selected image").font(.caption).foregroundStyle(.secondary)
                 selectedImageSummary
                 if case .loading = model.catalogueState { ProgressView("Checking Apple…").controlSize(.small) }
@@ -211,8 +240,8 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 6) { firmwareLibraryActions }
                 }
                 if model.showsSessionPresentation { BatchRestoreControls(model: model, sessions: model.deviceSessions, coordinator: model.batchCoordinator) }
-                if !model.isFirmwareLibraryMode {
-                    OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.selectedRelease?.version, platform: model.targetRestorePlatform), target: model.target)
+                if model.target != nil {
+                    OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.detailedSession?.selectedRelease?.version, platform: model.targetRestorePlatform), target: model.target)
                     Text("Restore erases the target device.").font(.caption.bold()).foregroundStyle(.secondary)
                     if model.canRevive { Text("Revive attempts repair without erasing recoverable user data, but is not a backup or guarantee.").font(.caption).foregroundStyle(.secondary) }
                 }
@@ -220,7 +249,7 @@ struct ContentView: View {
                     if let log = model.lastLogURL { Button("View Log") { NSWorkspace.shared.open(log) } }
                     Button("Reveal Logs in Finder") { NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DFUUtility")]) }
                 }
-                if !model.isFirmwareLibraryMode && !model.canRestore { Text(model.restoreUnavailableMessage).font(.caption).foregroundStyle(.secondary) }
+                if model.target != nil && !model.canRestore { Text(model.restoreUnavailableMessage).font(.caption).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
         } label: { Label(model.restoreSectionTitle, systemImage: "arrow.down.circle") }
     }
@@ -280,7 +309,7 @@ struct ContentView: View {
     private func formatBytes(_ value: Int64?) -> String { value.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unknown" }
 
     @ViewBuilder private var firmwareLibraryActions: some View {
-        Button("Change Version…") { model.beginChoosingVersion(); showVersions = true }
+        Button("Change Version…") { firmwareChooserSessionID = nil; model.beginChoosingVersion(); showVersions = true }
         Button("Choose Local IPSW…") { showImporter = true }
         Button("Manage Downloads…") { showCacheManager = true }
     }
@@ -291,18 +320,41 @@ private extension ImageState { var isPartial: Bool { if case .partial = self { t
 struct VersionPicker: View {
     @ObservedObject var model: AppModel
     @Binding var isPresented: Bool
+    let targetSessionID: DeviceSessionID?
+    init(model: AppModel, isPresented: Binding<Bool>, targetSessionID: DeviceSessionID? = nil) {
+        self.model = model
+        _isPresented = isPresented
+        self.targetSessionID = targetSessionID
+    }
+    private var choices: [IPSWChoice] { targetSessionID.map(model.firmwareChoices(for:)) ?? model.imageChoices }
+    private var canConfirm: Bool {
+        guard let pending = model.pendingRelease else { return false }
+        return choices.contains { FirmwareReleaseKey($0.release) == FirmwareReleaseKey(pending) }
+    }
+    private var title: String {
+        if let targetSessionID, let session = model.deviceSessions.sessions.first(where: { $0.id == targetSessionID }) {
+            return "Choose Firmware for \(session.device.friendlyName ?? session.device.family.displayName)"
+        }
+        return "Choose \(model.selectedRelease?.platform.displayName ?? model.imageChoices.first?.release.platform.displayName ?? "OS") Version"
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Choose \(model.selectedRelease?.platform.displayName ?? model.imageChoices.first?.release.platform.displayName ?? "OS") Version").font(.title2.bold())
+                Text(title).font(.title2.bold())
                 Spacer()
-                Button { Task { await model.refreshCatalogue(); model.beginChoosingVersion() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(model.catalogueState == .loading)
+                Button {
+                    Task {
+                        await model.refreshCatalogue()
+                        if let targetSessionID { model.beginChoosingFirmware(for: targetSessionID) }
+                        else { model.beginChoosingVersion() }
+                    }
+                } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(model.catalogueState == .loading)
             }
             if case .loading = model.catalogueState { ProgressView("Checking Apple…") }
-            if model.imageChoices.isEmpty, model.catalogueState != .loading { ContentUnavailableView("No Apple restore images are currently available", systemImage: "externaldrive.badge.questionmark") }
+            if choices.isEmpty, model.catalogueState != .loading { ContentUnavailableView("No compatible Apple restore images are currently available", systemImage: "externaldrive.badge.questionmark") }
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(model.imageChoices) { choice in
+                    ForEach(choices) { choice in
                         Button { model.choosePendingRelease(choice.release) } label: {
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: model.pendingRelease.map(FirmwareReleaseKey.init) == FirmwareReleaseKey(choice.release) ? "largecircle.fill.circle" : "circle")
@@ -332,9 +384,18 @@ struct VersionPicker: View {
             HStack {
                 Spacer()
                 Button("Cancel") { model.cancelChoosingVersion(); isPresented = false }.keyboardShortcut(.cancelAction)
-                Button("Use Version") { model.confirmPendingRelease(); isPresented = false }.keyboardShortcut(.defaultAction).disabled(model.pendingRelease == nil)
+                Button("Use Version") {
+                    if let targetSessionID { model.confirmPendingRelease(for: targetSessionID) }
+                    else { model.confirmPendingRelease() }
+                    isPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canConfirm)
             }
-        }.padding().frame(minWidth: 590, minHeight: 430).onAppear { model.beginChoosingVersion() }
+        }.padding().frame(minWidth: 590, minHeight: 430).onAppear {
+            if let targetSessionID { model.beginChoosingFirmware(for: targetSessionID) }
+            else { model.beginChoosingVersion() }
+        }
     }
 
     @ViewBuilder private func cacheLabel(_ state: IPSWChoiceCacheState) -> some View {
@@ -415,7 +476,7 @@ private struct BatchRestoreControls: View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
             Text("Sequential Batch").font(.headline)
-            Text("The selected device set and firmware assignments are frozen when a batch starts. Operations run sequentially and each device is explicitly targeted.").font(.caption).foregroundStyle(.secondary)
+            Text("The selected device set and chosen firmware are frozen when a batch starts. Operations run sequentially and each device is explicitly targeted.").font(.caption).foregroundStyle(.secondary)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { firmwareButtons }
                 VStack(alignment: .leading, spacing: 8) { firmwareButtons }
@@ -463,7 +524,8 @@ private struct BatchRestoreControls: View {
 
     @ViewBuilder private var firmwareButtons: some View {
         Button("Use Latest Compatible Firmware") { Task { await model.useLatestCompatibleFirmwareForSelectedSessions() } }
-        Button("Use Current Firmware for Selected") { model.applyCurrentFirmwareToSelectedSessions() }
+        Button("Use Library Firmware for Selected") { model.applyCurrentFirmwareToSelectedSessions() }
+            .disabled(!model.canApplyCurrentLibraryFirmwareToSelectedSessions)
     }
     @ViewBuilder private var operationButtons: some View {
         Button("Restore \(sessions.selectedSessions.count) \(sessions.selectedSessions.count == 1 ? "Device" : "Devices")", role: .destructive) { confirming = true }

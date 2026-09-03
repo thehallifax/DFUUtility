@@ -191,10 +191,10 @@ private let noOpLogger = AppMockLogger()
     #expect(app.choice(for: knownPad)?.compatibility == .uncertain)
 
     let phoneApp = model(service: AppMockService(releases: [knownPhone]), devices: [DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE", productType: "iPhone15,2")])
-    await phoneApp.load()
+    await phoneApp.load(); await phoneApp.selectBrowsePlatform(.iOS)
     #expect(phoneApp.choice(for: knownPhone)?.compatibility == .compatible(model: "iPhone15,2"))
     let padApp = model(service: AppMockService(releases: [knownPad]), devices: [DFUDevice(family: .iPad, state: .recovery, ecid: "PAD", productType: "iPad13,18")])
-    await padApp.load()
+    await padApp.load(); await padApp.selectBrowsePlatform(.iPadOS)
     #expect(padApp.choice(for: knownPad)?.compatibility == .compatible(model: "iPad13,18"))
 }
 
@@ -239,26 +239,102 @@ private let noOpLogger = AppMockLogger()
     #expect(app.manageDownloadsAvailable)
 }
 
-@Test @MainActor func detailedTargetOverridesBrowsePlatformAndDisconnectReturnsToLibrary() async {
+@Test @MainActor func firmwareLibraryPlatformsRemainIndependentWithEveryTargetShape() async {
+    let shapes: [[DFUDevice]] = [
+        [DFUDevice(family: .mac, state: .dfu, ecid: "MAC", productType: "Mac14,2")],
+        [DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE", productType: "iPhone15,2")],
+        [DFUDevice(family: .iPad, state: .recovery, ecid: "PAD", productType: "iPad13,18")],
+        [DFUDevice(family: .mac, state: .dfu, ecid: "MAC", productType: "Mac14,2"), DFUDevice(family: .iPad, state: .recovery, ecid: "PAD", productType: "iPad13,18")]
+    ]
+    for devices in shapes {
+        let app = model(service: AppMockService(releases: browsingReleases()), devices: devices)
+        await app.load()
+        #expect(app.isFirmwareLibraryMode); #expect(app.restoreSectionTitle == "Firmware Library")
+        for platform in RestorePlatform.allCases {
+            await app.selectBrowsePlatform(platform)
+            #expect(app.browsePlatform == platform); #expect(app.availableReleases.allSatisfy { $0.platform == platform })
+        }
+    }
+}
+
+@Test @MainActor func libraryBrowsingNeverMutatesAssignedOrFrozenIPadFirmware() async throws {
+    let assigned = IPSWRelease(platform: .iPadOS, version: "18.7.10", build: "22H374", downloadURL: URL(string: "https://example.invalid/assigned.ipsw")!, checksum: "assigned", supportedDevices: ["iPad7,11"])
+    let otherPad = IPSWRelease(platform: .iPadOS, version: "18.7.9", build: "22H370", downloadURL: URL(string: "https://example.invalid/other.ipsw")!, checksum: "other", supportedDevices: ["iPad7,11"])
+    let releases = browsingReleases() + [assigned, otherPad]
+    let cache = tempCache(), assignedURL = try addValidatedCacheFixture(assigned, to: cache)
+    let pad = DFUDevice(family: .iPad, state: .recovery, ecid: "PAD", productType: "iPad7,11")
+    let app = model(service: AppMockService(releases: releases), devices: [pad], cache: cache)
+    await app.load()
+    let id = try #require(app.deviceSessions.sessions.first?.id)
+    app.deviceSessions.setFirmware(for: id, release: assigned, url: assignedURL, validation: .validated)
+    app.setSessionSelected(id, selected: true)
+    _ = app.deviceSessions.freezeSelectedBatch()
+    for platform in [RestorePlatform.macOS, .iOS, .iPadOS] {
+        await app.selectBrowsePlatform(platform)
+        if platform == .iPadOS { app.selectRelease(otherPad) }
+        let session = try #require(app.deviceSessions.sessions.first)
+        #expect(session.selectedRelease == assigned); #expect(session.selectedImageURL == assignedURL); #expect(session.firmwareState == .validated)
+        #expect(app.deviceSessions.activeBatchIDs == [id]); #expect(app.deviceSessions.isFirmwareInUseByBatch(assignedURL))
+    }
+}
+
+@Test @MainActor func currentLibraryFirmwareChangesSessionOnlyAfterExplicitCompatibleAssignment() async throws {
+    let release = browsingReleases().first { $0.platform == .iPadOS }!
+    let cache = tempCache(), url = try addValidatedCacheFixture(release, to: cache)
+    let pad = DFUDevice(family: .iPad, state: .recovery, ecid: "PAD", productType: "iPad13,18")
+    let app = model(service: AppMockService(releases: browsingReleases()), devices: [pad], cache: cache)
+    await app.load(); await app.selectBrowsePlatform(.iPadOS)
+    let id = try #require(app.detailedSession?.id)
+    app.deviceSessions.setFirmware(for: id, release: nil, url: nil, validation: .unselected)
+    #expect(app.detailedSession?.selectedRelease == nil)
+    await app.prepareFirmwareChooser(for: id)
+    app.choosePendingRelease(release)
+    app.confirmPendingRelease(for: id)
+    #expect(app.detailedSession?.selectedRelease == release); #expect(app.detailedSession?.selectedImageURL == url); #expect(app.detailedSession?.firmwareState == .validated)
+}
+
+@Test @MainActor func libraryFirmwareBatchActionRequiresCompatibilityWithEverySelectedTarget() async {
+    let shared = IPSWRelease(platform: .iPadOS, version: "18.7.10", build: "SHARED", downloadURL: URL(string: "https://example.invalid/shared.ipsw")!, supportedDevices: ["iPad7,11", "iPad12,1"])
+    let narrow = IPSWRelease(platform: .iPadOS, version: "18.7.9", build: "NARROW", downloadURL: URL(string: "https://example.invalid/narrow.ipsw")!, supportedDevices: ["iPad7,11"])
+    let devices = [
+        DFUDevice(family: .iPad, state: .recovery, ecid: "PAD-A", productType: "iPad7,11"),
+        DFUDevice(family: .iPad, state: .recovery, ecid: "PAD-B", productType: "iPad12,1")
+    ]
+    let app = model(service: AppMockService(releases: [shared, narrow]), devices: devices)
+    await app.load(); await app.selectBrowsePlatform(.iPadOS)
+    for session in app.deviceSessions.sessions { app.setSessionSelected(session.id, selected: true) }
+    app.selectRelease(narrow)
+    #expect(!app.canApplyCurrentLibraryFirmwareToSelectedSessions)
+    app.selectRelease(shared)
+    #expect(app.canApplyCurrentLibraryFirmwareToSelectedSessions)
+    app.clearSessionSelection()
+    #expect(!app.canApplyCurrentLibraryFirmwareToSelectedSessions)
+}
+
+@Test @MainActor func connectedTargetNeverOverridesIndependentFirmwareLibraryPlatform() async {
     let phone = DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE", productType: "iPhone15,2")
     let discovery = AppSequencedDiscovery([[phone], []])
     let app = AppModel(ipswService: AppMockService(releases: browsingReleases()), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, targetDiscoveryAttempts: 1)
     await app.selectBrowsePlatform(.iPadOS)
     await app.refreshDiagnosticsAndTarget()
-    #expect(!app.isFirmwareLibraryMode); #expect(app.targetRestorePlatform == .iOS); #expect(app.restoreSectionTitle == "iOS Restore")
-    #expect(app.availableReleases.map(\.platform) == [.iOS]); #expect(app.browsePlatform == .iPadOS)
+    #expect(app.isFirmwareLibraryMode); #expect(app.targetRestorePlatform == .iOS); #expect(app.restoreSectionTitle == "Firmware Library")
+    #expect(app.availableReleases.map(\.platform) == [.iPadOS]); #expect(app.browsePlatform == .iPadOS)
     await app.refreshDiagnosticsAndTarget()
     #expect(app.isFirmwareLibraryMode); #expect(app.targetRestorePlatform == .iPadOS); #expect(app.restoreSectionTitle == "Firmware Library")
     #expect(app.availableReleases.map(\.platform) == [.iPadOS])
 }
 
-@Test @MainActor func browsingPlatformCannotBypassConnectedTargetCompatibility() async {
+@Test @MainActor func browsingPlatformCannotBypassExplicitDeviceAssignmentCompatibility() async {
     let incompatiblePhone = DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE", productType: "iPhone16,1")
     let discovery = AppSequencedDiscovery([[incompatiblePhone]])
     let app = AppModel(ipswService: AppMockService(releases: browsingReleases()), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, targetDiscoveryAttempts: 1)
     await app.selectBrowsePlatform(.iOS); #expect(app.selectedRelease?.build == "PHONE")
     await app.refreshDiagnosticsAndTarget()
-    #expect(app.targetRestorePlatform == .iOS); #expect(app.availableReleases.isEmpty); #expect(app.selectedRelease == nil); #expect(!app.canRestore)
+    #expect(app.targetRestorePlatform == .iOS); #expect(app.availableReleases.map(\.platform) == [.iOS]); #expect(app.selectedRelease?.build == "PHONE"); #expect(!app.canRestore)
+    let id = try! #require(app.detailedSession?.id)
+    await app.prepareFirmwareChooser(for: id)
+    #expect(app.firmwareChoices(for: id).isEmpty)
+    #expect(app.detailedSession?.firmwareState != .validated); #expect(!app.canRestore)
 }
 
 @Test @MainActor func firmwareChooserMergesCatalogueAndValidatedCacheNewestFirst() async throws {
@@ -311,8 +387,8 @@ private let noOpLogger = AppMockLogger()
     for session in app.deviceSessions.sessions { app.setSessionSelected(session.id, selected: true) }
     await app.useLatestCompatibleFirmwareForSelectedSessions()
 
-    #expect(app.selectedRelease == compatible)
-    #expect(app.imageURL?.resolvingSymlinksInPath() == compatibleURL.resolvingSymlinksInPath())
+    #expect(app.selectedRelease == ipad13)
+    #expect(app.imageURL == nil)
     #expect(app.deviceSessions.sessions.allSatisfy {
         $0.selectedRelease == compatible
             && $0.selectedImageURL?.resolvingSymlinksInPath() == compatibleURL.resolvingSymlinksInPath()
@@ -529,9 +605,9 @@ private let noOpLogger = AppMockLogger()
 
     let phone = DFUDevice(family: .iPhone, state: .recovery, ecid: "SYNTHETIC", productType: "iPhone7,2")
     let connected = model(service: AppMockService(releases: []), devices: [phone], cache: cache)
-    await connected.load()
-    #expect(connected.availableReleases.map(\.build) == ["PHONE-OK"])
-    #expect(connected.choice(for: unknown) == nil)
+    await connected.load(); await connected.selectBrowsePlatform(.iOS)
+    #expect(Set(connected.availableReleases.map(\.build)) == ["PHONE-OK", "PHONE-NO", "PHONE-UNKNOWN"])
+    #expect(connected.choice(for: unknown) != nil)
 }
 
 @Test @MainActor func removingCachedOnlyReleaseRemovesItFromChooserAfterRefresh() async throws {
@@ -581,8 +657,9 @@ private let noOpLogger = AppMockLogger()
     let target = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
     let app = model(service: AppMockService(releases: [other, compatible]), devices: [target])
     await app.load()
-    #expect(app.imageChoices.map(\.release.build) == ["MATCH"])
+    #expect(app.imageChoices.map(\.release.build) == ["MATCH", "OTHER"])
     #expect(app.imageChoices.first?.compatibility == .compatible(model: "Mac14,2"))
+    #expect(app.choice(for: other)?.compatibility == .uncertain)
 }
 
 @Test @MainActor func liveDownloadProgressIsVisibleBeforeValidation() async throws {
@@ -610,6 +687,13 @@ private let noOpLogger = AppMockLogger()
     #expect(header.lowerBound < scroll.lowerBound && scroll.lowerBound < target.lowerBound)
     #expect(content.contains("maxWidth: layout.maximumWorkspaceWidth"))
     #expect(!content.contains("scaleEffect")); #expect(!content.contains("MagnificationGesture"))
+    #expect(content.contains("NSApplication.didBecomeActiveNotification"))
+    #expect(content.contains("NSApplication.willResignActiveNotification"))
+    #expect(!content.contains("task(id: scenePhase)"))
+    #expect(content.contains("Firmware for this device"))
+    #expect(content.contains("Choose Firmware…")); #expect(content.contains("Choose Different Firmware…"))
+    #expect(content.contains("Use Library Firmware for Selected"))
+    #expect(!content.contains("Assigned Firmware")); #expect(!content.contains("Assign Current Library Firmware")); #expect(!content.contains("Use Current Firmware for Selected"))
 }
 
 @Test @MainActor func knownAndUnknownDownloadsHaveExplicitInitialPresentation() async {
@@ -660,7 +744,7 @@ private let noOpLogger = AppMockLogger()
     let cache = tempCache(); try cache.prepare(for: release); try Data("valid".utf8).write(to: cache.partialURL(for: release)); _ = try cache.commit(partial: cache.partialURL(for: release), release: release)
     let target = DFUDevice(state: .dfu, model: "Mac14,2", ecid: "0xSAFE")
     let app = AppModel(ipswService: AppMockService(releases: [release]), discovery: AppMockDiscovery(values: [target]), cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: HoldingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
-    await app.load(); await app.refreshManagedCache(); let entry = try #require(app.managedCacheEntries.first); app.restoreConfirmed()
+    await app.load(); await app.refreshManagedCache(); let entry = try #require(app.managedCacheEntries.first); let id = try #require(app.detailedSession?.id); await app.prepareFirmwareChooser(for: id); app.choosePendingRelease(release); app.confirmPendingRelease(for: id); app.restoreConfirmed()
     #expect(await waitForRestoreState(app) { if case .running = $0 { true } else { false } })
     #expect(app.cacheRemovalDisabledReason(for: entry)?.contains("in use") == true)
 }
@@ -813,8 +897,8 @@ private let noOpLogger = AppMockLogger()
 }
 
 @Test @MainActor func restoreDisabledWithoutValidImage() async {
-    let app = model(service: AppMockService(releases: []), devices: [DFUDevice(state: .dfu)]); await app.refreshDiagnosticsAndTarget()
-    #expect(!app.canRestore); #expect(app.restoreUnavailableMessage == "Select firmware before restoring.")
+    let app = model(service: AppMockService(releases: []), devices: [DFUDevice(state: .dfu, ecid: "MAC")]); await app.refreshDiagnosticsAndTarget()
+    #expect(!app.canRestore); #expect(app.restoreUnavailableMessage == "No firmware has been chosen for this device.")
 }
 
 @Test @MainActor func contextualErrorTitlesPreserveKnownOperationContext() {
@@ -829,7 +913,7 @@ private let noOpLogger = AppMockLogger()
 }
 
 @Test @MainActor func restoreEnabledOnlyForRealDFUAndImage() async {
-    let app = model(devices: [DFUDevice(state: .dfu)]); await app.refreshDiagnosticsAndTarget(); await app.validateManualIPSW(testURL); #expect(app.canRestore)
+    let app = model(devices: [DFUDevice(state: .dfu, ecid: "MAC")]); await app.refreshDiagnosticsAndTarget(); let id = app.deviceSessions.sessions[0].id; app.deviceSessions.setFirmware(for: id, release: nil, url: testURL, validation: .validated); #expect(app.canRestore)
 }
 
 @Test @MainActor func demoDFUTargetCannotEnableRestore() async {
@@ -886,8 +970,8 @@ private let noOpLogger = AppMockLogger()
     #expect(app.canUseMobileDFUAssistant)
     #expect(!app.canEnterDFU)
     #expect(app.targetDFUGuidance == .guidedPhysicalButtons)
-    #expect(app.restoreSectionTitle == "iPadOS Restore")
-    #expect(app.selectedRelease?.platform == .iPadOS)
+    #expect(app.restoreSectionTitle == "Firmware Library")
+    #expect(app.selectedRelease == nil)
     #expect(app.prepareMobileDFUAssistant())
     #expect(app.mobileDFUAssistant?.profile.productType == "iPad7,11")
     #expect(app.mobileDFUAssistant?.profile.powerButtonName == "Top")
@@ -895,7 +979,7 @@ private let noOpLogger = AppMockLogger()
     app.dismissMobileDFUAssistant()
 }
 
-@Test @MainActor func switchingIPhoneAndIPadInvalidatesAndReloadsTargetSpecificPlatformState() async {
+@Test @MainActor func switchingTargetsDoesNotReplaceIndependentLibraryState() async {
     let phoneRelease = IPSWRelease(platform: .iOS, version: "12.5.8", build: "16H81", downloadURL: URL(string: "https://updates.cdn-apple.com/iphone.ipsw")!, supportedDevices: ["iPhone7,2"])
     let padRelease = IPSWRelease(platform: .iPadOS, version: "18.7.10", build: "22H374", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad.ipsw")!, supportedDevices: ["iPad7,11"])
     let phone = DFUDevice(family: .iPhone, state: .normal, ecid: "0xPHONE", productType: "iPhone7,2")
@@ -905,13 +989,13 @@ private let noOpLogger = AppMockLogger()
     let app = AppModel(ipswService: service, discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, privilegeMode: .community)
 
     await app.load()
-    #expect(app.target?.family == .iPhone); #expect(app.selectedRelease == phoneRelease); #expect(app.restoreSectionTitle == "iOS Restore")
+    #expect(app.target?.family == .iPhone); #expect(app.selectedRelease == nil); #expect(app.restoreSectionTitle == "Firmware Library")
     await app.refreshDiagnosticsAndTarget()
-    #expect(app.target?.family == .iPad); #expect(app.selectedRelease == padRelease); #expect(app.restoreSectionTitle == "iPadOS Restore")
+    #expect(app.target?.family == .iPad); #expect(app.selectedRelease == nil); #expect(app.restoreSectionTitle == "Firmware Library")
     #expect(app.canUseMobileDFUAssistant); #expect(app.targetDFUGuidance == .guidedPhysicalButtons)
     await app.refreshDiagnosticsAndTarget()
-    #expect(app.target?.family == .iPhone); #expect(app.selectedRelease == phoneRelease); #expect(app.restoreSectionTitle == "iOS Restore")
-    #expect(service.families == [.iPhone, .iPhone, .iPad, .iPad, .iPhone, .iPhone])
+    #expect(app.target?.family == .iPhone); #expect(app.selectedRelease == nil); #expect(app.restoreSectionTitle == "Firmware Library")
+    #expect(service.families.filter { $0 == .mac }.count == 1)
 }
 
 @Test func deviceFamilyIsTheSharedRestorePlatformMapping() {
@@ -925,10 +1009,10 @@ private let noOpLogger = AppMockLogger()
     let wrong = IPSWRelease(platform: .iPadOS, version: "18.7.10", build: "WRONG", downloadURL: URL(string: "https://updates.cdn-apple.com/wrong-pad.ipsw")!, supportedDevices: ["iPad7,12"])
     let cache = tempCache(); try cache.prepare(for: compatible); let partial = cache.partialURL(for: compatible); try Data("valid".utf8).write(to: partial); _ = try cache.commit(partial: partial, release: compatible)
     let target = DFUDevice(family: .iPad, state: .dfu, ecid: "0xPAD", productType: "iPad7,11")
-    let app = model(service: AppMockService(releases: [wrong, compatible]), devices: [target], cache: cache); await app.load()
-    #expect(app.imageChoices.map(\.release.build) == ["22H374"]); #expect(app.selectedRelease == compatible); #expect(app.canRestore)
-    let wrongOnly = model(service: AppMockService(releases: [wrong]), devices: [target], cache: tempCache()); await wrongOnly.load()
-    #expect(wrongOnly.imageChoices.isEmpty); #expect(!wrongOnly.canRestore)
+    let app = model(service: AppMockService(releases: [wrong, compatible]), devices: [target], cache: cache); await app.load(); await app.selectBrowsePlatform(.iPadOS)
+    #expect(Set(app.imageChoices.map(\.release.build)) == ["22H374", "WRONG"]); #expect(app.detailedSession?.selectedRelease == compatible); #expect(app.canRestore)
+    let wrongOnly = model(service: AppMockService(releases: [wrong]), devices: [target], cache: tempCache()); await wrongOnly.load(); await wrongOnly.selectBrowsePlatform(.iPadOS)
+    #expect(wrongOnly.imageChoices.map(\.release.build) == ["WRONG"]); let id = try #require(wrongOnly.detailedSession?.id); await wrongOnly.prepareFirmwareChooser(for: id); #expect(wrongOnly.firmwareChoices(for: id).isEmpty); #expect(!wrongOnly.canRestore)
 }
 
 @Test @MainActor func launchStillPromotesSingleMac() async {
@@ -1026,12 +1110,52 @@ private let noOpLogger = AppMockLogger()
     #expect(retained.id == original.id); #expect(retained.isSelected); #expect(retained.generation == 9); #expect(retained.operationState == .failed("Owned result"))
 }
 
-@Test @MainActor func cancelledContinuousDiscoveryLoopDoesNotPoll() async {
+@Test @MainActor func benchDiscoveryLifecycleIsIdempotentAndStopsPolling() async {
     let discovery = CountingAppDiscovery([])
     let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
-    let task = Task { await app.runContinuousDiscovery(interval: .seconds(10)) }
-    task.cancel(); await task.value
-    #expect(discovery.callCount == 0)
+    app.startBenchDiscovery(interval: .seconds(10))
+    app.startBenchDiscovery(interval: .seconds(10))
+    #expect(app.isBenchDiscoveryRunning)
+    try? await Task.sleep(for: .milliseconds(30))
+    let countAtStop = app.benchDiscoveryPollCount
+    #expect(countAtStop == 1); #expect(discovery.callCount == 1)
+    app.stopBenchDiscovery(); #expect(!app.isBenchDiscoveryRunning)
+    try? await Task.sleep(for: .milliseconds(40))
+    #expect(app.benchDiscoveryPollCount == countAtStop)
+}
+
+@Test @MainActor func benchDiscoveryContinuesAfterErrorAndPreservesLastValidSnapshot() async throws {
+    let recovery = DFUDevice(family: .iPad, state: .recovery, ecid: "PAD", productType: "iPad13,18")
+    let dfu = DFUDevice(family: .iPad, state: .dfu, ecid: "PAD", productType: "iPad13,18")
+    let second = DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE", productType: "iPhone15,2")
+    let discovery = ResultSequencedDiscovery([.success([recovery]), .failure(DFUError.commandFailed(command: "fixture", status: 1, output: "transient")), .success([dfu, second])])
+    let restore = CountingRestore(), service = TrackingIPSWService(releases: [])
+    let app = AppModel(ipswService: service, discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: restore, dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.pollDeviceDiscovery()
+    let id = try #require(app.deviceSessions.sessions.first?.id)
+    app.startBenchDiscovery(interval: .milliseconds(30))
+    try await Task.sleep(for: .milliseconds(10))
+    #expect(app.deviceSessions.sessions.count == 1); #expect(app.deviceSessions.sessions[0].id == id); #expect(app.deviceSessions.sessions[0].device.state == .recovery)
+    for _ in 0..<100 {
+        if app.deviceSessions.sessions.count == 2 { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    app.stopBenchDiscovery()
+    #expect(app.deviceSessions.sessions.count == 2)
+    #expect(app.deviceSessions.sessions.first { $0.id == id }?.device.state == .dfu)
+    #expect(app.deviceSessions.sessions.first { $0.ecid == "PHONE" }?.isSelected == false)
+    #expect(restore.callCount == 0); #expect(service.eventRequests == 0)
+}
+
+@Test @MainActor func benchDiscoveryIsDisabledInHardwareInertModes() {
+    for app in [
+        AppModel(ipswService: AppMockService(), discovery: CountingAppDiscovery([]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true),
+        AppModel(ipswService: AppMockService(), discovery: CountingAppDiscovery([]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isUpdateTestMode: true),
+        AppModel(ipswService: AppMockService(), discovery: CountingAppDiscovery([]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true, screenshotScenario: "normal-mac")
+    ] {
+        app.startBenchDiscovery(interval: .milliseconds(1))
+        #expect(!app.isBenchDiscoveryRunning); #expect(app.benchDiscoveryPollCount == 0)
+    }
 }
 
 @Test @MainActor func guiUsesOneGeneralizedDiscoverySnapshotForCardAndDiagnostics() async {
@@ -1125,8 +1249,8 @@ private let noOpLogger = AppMockLogger()
     let wrong = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G84", downloadURL: URL(string: "https://updates.cdn-apple.com/wrong.ipsw")!, supportedDevices: ["iPhone16,1"])
     let target = DFUDevice(family: .iPhone, state: .dfu, ecid: "PHONE", productType: "iPhone15,2")
     let cache = tempCache(); try cache.prepare(for: compatible); let partial = cache.partialURL(for: compatible); try Data("valid".utf8).write(to: partial); _ = try cache.commit(partial: partial, release: compatible)
-    let app = model(service: AppMockService(releases: [wrong, compatible]), devices: [target], cache: cache); await app.load()
-    #expect(app.imageChoices.map(\.release.build) == ["23G83"]); #expect(app.canRestore)
+    let app = model(service: AppMockService(releases: [wrong, compatible]), devices: [target], cache: cache); await app.load(); await app.selectBrowsePlatform(.iOS)
+    #expect(Set(app.imageChoices.map(\.release.build)) == ["23G83", "23G84"]); #expect(app.canRestore)
     let normal = model(service: AppMockService(releases: [compatible]), devices: [DFUDevice(family: .iPhone, state: .normal, ecid: "PHONE", productType: "iPhone15,2")], cache: cache); await normal.load(); #expect(!normal.canRestore)
 }
 
@@ -1204,6 +1328,16 @@ private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscoverin
     private let lock = NSLock(); private var values: [[DFUDevice]]
     init(_ values: [[DFUDevice]]) { self.values = values }
     func devices() throws -> [DFUDevice] { lock.withLock { values.count > 1 ? values.removeFirst() : (values.first ?? []) } }
+}
+private final class ResultSequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
+    private let lock = NSLock(); private var results: [Result<[DFUDevice], Error>]
+    init(_ results: [Result<[DFUDevice], Error>]) { self.results = results }
+    func devices() throws -> [DFUDevice] {
+        try lock.withLock {
+            let result = results.count > 1 ? results.removeFirst() : (results.first ?? .success([]))
+            return try result.get()
+        }
+    }
 }
 
 @Test func privilegedGUIOperationVerifiesSameECID() throws {
@@ -1293,7 +1427,7 @@ private final class AppSequencedDiscovery: @unchecked Sendable, DeviceDiscoverin
     let discovery = AppSequencedDiscovery([[dfu], [normal], [dfu], [normal]])
     let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: engine, dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, reconnectAttempts: 1, reconnectInterval: .zero)
 
-    await app.refreshDiagnosticsAndTarget(); await app.validateManualIPSW(testURL); #expect(app.canRestore)
+    await app.refreshDiagnosticsAndTarget(); let id = app.deviceSessions.sessions[0].id; app.deviceSessions.setFirmware(for: id, release: nil, url: testURL, validation: .validated); #expect(app.canRestore)
     app.restoreConfirmed()
     #expect(await waitForRestoreState(app) { if case .completed = $0 { true } else { false } })
     #expect(!app.operationInProgress); #expect(app.target?.state == .normal)

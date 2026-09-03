@@ -55,8 +55,8 @@ public struct DeviceSession: Identifiable, Equatable, Sendable {
                 : "Restore requires DFU mode."
         }
         switch firmwareState {
-        case .unselected: return "No firmware is assigned to this device."
-        case .selected: return "The assigned firmware has not been downloaded and validated."
+        case .unselected: return "No firmware has been chosen for this device."
+        case .selected: return "The chosen firmware has not been downloaded and validated."
         case .incompatible(let reason), .invalid(let reason): return reason
         case .validated: break
         }
