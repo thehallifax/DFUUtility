@@ -70,6 +70,47 @@ private func sessionDevice(_ family: AppleDeviceFamily, _ state: DeviceState, _ 
     #expect(manager.sessions.allSatisfy { $0.selectedImageURL == shared && $0.firmwareState == .validated })
 }
 
+@Test @MainActor func twoRecoveryIPad121SessionsAcceptOneValidatedCompatibleFirmware() {
+    let manager = DeviceSessionManager()
+    manager.reconcile([
+        sessionDevice(.iPad, .recovery, "PAD-ONE", product: "iPad12,1"),
+        sessionDevice(.iPad, .recovery, "PAD-TWO", product: "iPad12,1")
+    ])
+    let release = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, supportedDevices: ["iPad12,1", "iPad12,2"])
+    let shared = URL(fileURLWithPath: "/managed-cache/iPadOS/23G83/iPad12.ipsw")
+    manager.select(manager.sessions[0].id, selected: true)
+    manager.select(manager.sessions[1].id, selected: true)
+    manager.applySharedFirmware(release: release, url: shared, to: Set(manager.selectedSessions.map(\.id)))
+    let coordinator = BatchCoordinator(sessions: manager, operatorService: BatchOperatorFixture(plans: [:]), logger: BatchLoggerFixture())
+    #expect(manager.sessions.allSatisfy { $0.canRestore && $0.selectedImageURL == shared && $0.firmwareState == .validated })
+    #expect(coordinator.canStartRestore)
+
+    manager.reconcile([
+        sessionDevice(.iPad, .recovery, "PAD-TWO", product: "iPad12,1"),
+        sessionDevice(.iPad, .recovery, "PAD-ONE", product: "iPad12,1")
+    ])
+    #expect(manager.sessions.allSatisfy { $0.canRestore && $0.selectedImageURL == shared })
+}
+
+@Test @MainActor func sharedFirmwareAssignmentRemainsSelectedStateAndProductSpecific() {
+    let manager = DeviceSessionManager()
+    manager.reconcile([
+        sessionDevice(.iPad, .recovery, "SELECTED", product: "iPad12,1"),
+        sessionDevice(.iPad, .recovery, "UNSELECTED", product: "iPad12,1"),
+        sessionDevice(.iPad, .recovery, "WRONG", product: "iPad16,10"),
+        sessionDevice(.iPad, .normal, "NORMAL", product: "iPad12,1")
+    ])
+    for ecid in ["SELECTED", "WRONG", "NORMAL"] {
+        manager.select(manager.sessions.first { $0.ecid == ecid }!.id, selected: true)
+    }
+    let release = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, supportedDevices: ["iPad12,1"])
+    manager.applySharedFirmware(release: release, url: URL(fileURLWithPath: "/validated.ipsw"), to: Set(manager.selectedSessions.map(\.id)))
+    #expect(manager.sessions.first { $0.ecid == "SELECTED" }?.canRestore == true)
+    #expect(manager.sessions.first { $0.ecid == "UNSELECTED" }?.firmwareState == .unselected)
+    #expect(manager.sessions.first { $0.ecid == "WRONG" }?.restoreEligibilityFailure?.contains("not compatible") == true)
+    #expect(manager.sessions.first { $0.ecid == "NORMAL" }?.restoreEligibilityFailure == "Restore requires Recovery or DFU mode.")
+}
+
 @Test @MainActor func frozenBatchFirmwareDependenciesAreReferenceCountedUntilWorkEnds() {
     let manager = DeviceSessionManager()
     manager.reconcile([

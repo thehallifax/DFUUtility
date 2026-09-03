@@ -45,11 +45,18 @@ public struct FirmwareReleaseKey: Hashable, Sendable {
     public let platform: RestorePlatform
     public let version: String
     public let build: String
+    public let supportedDevices: [String]
 
     public init(_ release: IPSWRelease) {
         platform = release.platform
         version = release.version
         build = release.build
+        // A single mobile OS build can have several product-specific IPSWs.
+        // Keep those variants distinct while retaining the historical universal
+        // key for macOS and catalogue records whose compatibility is unknown.
+        supportedDevices = release.platform == .macOS
+            ? []
+            : release.supportedDevices.map { $0.lowercased() }.sorted()
     }
 }
 

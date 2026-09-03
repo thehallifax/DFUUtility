@@ -268,6 +268,42 @@ private let noOpLogger = AppMockLogger()
     #expect(app.displaySize(for: catalogue) == 99)
 }
 
+@Test @MainActor func mobileBuildVariantsWithDifferentProductsDoNotCollapse() async {
+    let ipad12 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, supportedDevices: ["iPad12,1", "iPad12,2"])
+    let ipad16 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad16.ipsw")!, supportedDevices: ["iPad16,8", "iPad16,9", "iPad16,10", "iPad16,11"])
+    let app = model(service: AppMockService(releases: [ipad16, ipad12]))
+    await app.selectBrowsePlatform(.iPadOS)
+    #expect(app.availableReleases.count == 2)
+    #expect(Set(app.availableReleases.map { Set($0.supportedDevices) }) == Set([Set(ipad12.supportedDevices), Set(ipad16.supportedDevices)]))
+    #expect(FirmwareReleaseKey(ipad12) != FirmwareReleaseKey(ipad16))
+}
+
+@Test @MainActor func appModelAssignsCurrentValidatedIPad121FirmwareOnlyToSelectedRecoverySessions() async throws {
+    let cache = tempCache()
+    let release = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, supportedDevices: ["iPad12,1", "iPad12,2"])
+    let cachedURL = try addValidatedCacheFixture(release, to: cache)
+    let devices = [
+        DFUDevice(family: .iPad, state: .recovery, ecid: "SYNTHETIC-PAD-ONE", productType: "iPad12,1"),
+        DFUDevice(family: .iPad, state: .recovery, ecid: "SYNTHETIC-PAD-TWO", productType: "iPad12,1")
+    ]
+    let app = model(service: AppMockService(releases: [release]), devices: devices, cache: cache)
+    await app.load()
+    await app.selectBrowsePlatform(.iPadOS)
+    let first = app.deviceSessions.sessions[0].id, second = app.deviceSessions.sessions[1].id
+    app.setSessionSelected(first, selected: true)
+    app.applyCurrentFirmwareToSelectedSessions()
+    #expect(app.deviceSessions.sessions.first { $0.id == first }?.selectedImageURL == cachedURL)
+    #expect(app.deviceSessions.sessions.first { $0.id == first }?.canRestore == true)
+    #expect(app.deviceSessions.sessions.first { $0.id == second }?.firmwareState == .unselected)
+
+    app.setSessionSelected(second, selected: true)
+    app.applyCurrentFirmwareToSelectedSessions()
+    #expect(app.deviceSessions.sessions.allSatisfy { $0.canRestore && $0.selectedImageURL == cachedURL })
+    #expect(app.batchCoordinator.canStartRestore)
+    await app.refreshDiagnosticsAndTarget()
+    #expect(app.deviceSessions.sessions.allSatisfy { $0.canRestore && $0.selectedImageURL == cachedURL })
+}
+
 @Test @MainActor func selectingCachedOnlyReleaseUsesLocalFileWithoutDownload() async throws {
     let cache = tempCache()
     let cached = IPSWRelease(platform: .iOS, version: "16.7.16", build: "20H392", downloadURL: URL(string: "https://updates.cdn-apple.com/historical.ipsw")!, supportedDevices: ["iPhone7,2"])

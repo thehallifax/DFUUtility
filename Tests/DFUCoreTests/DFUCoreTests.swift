@@ -95,6 +95,18 @@ private actor MockDownloader: IPSWDownloading {
     #expect(cache.destination(for: phone).path.contains("/iOS/23G83/")); #expect(cache.destination(for: tablet).path.contains("/iPadOS/23G83/"))
 }
 
+@Test func sameMobileBuildForDifferentProductSetIsNotACacheHit() throws {
+    let cache = IPSWCache(directory: try temporaryDirectory())
+    let ipad16 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad16.ipsw")!, supportedDevices: ["iPad16,8", "iPad16,9", "iPad16,10", "iPad16,11"])
+    let ipad12 = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://updates.cdn-apple.com/ipad12.ipsw")!, supportedDevices: ["iPad12,1", "iPad12,2"])
+    try cache.prepare(for: ipad16)
+    try Data(repeating: 1, count: 17).write(to: cache.partialURL(for: ipad16))
+    let stored = try cache.commit(partial: cache.partialURL(for: ipad16), release: ipad16)
+    #expect(cache.cachedURL(for: ipad16) == stored)
+    #expect(cache.cachedURL(for: ipad12) == nil)
+    #expect(try cache.validCachedURL(for: ipad12, validator: AcceptValidator()) == nil)
+}
+
 @Test func managedCacheEnumeratesPlatformsPartialsValidationAndTotalSize() throws {
     let cache = IPSWCache(directory: try temporaryDirectory())
     let mac = release(), phone = IPSWRelease(platform: .iOS, version: "12.5.8", build: "16H81", downloadURL: sampleURL, supportedDevices: ["iPhone7,2"])

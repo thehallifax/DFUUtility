@@ -35,10 +35,14 @@ public struct IPSWCache: Sendable {
     public func partialURL(for release: IPSWRelease) -> URL { downloadsDirectory(for: release).appendingPathComponent("\(safe(release.build)).partial") }
     private func partialMetadataURL(for release: IPSWRelease) -> URL { downloadsDirectory(for: release).appendingPathComponent("\(safe(release.build)).json") }
     public func validCachedURL(for release: IPSWRelease, validator: any IPSWValidating) throws -> URL? {
-        let url = destination(for: release); guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let url = destination(for: release)
+        guard cachedMetadataMatches(release), FileManager.default.fileExists(atPath: url.path) else { return nil }
         return validator.validationResult(url, release: release, verifyChecksum: false) == .valid ? url : nil
     }
-    public func cachedURL(for release: IPSWRelease) -> URL? { let url = destination(for: release); return FileManager.default.fileExists(atPath: url.path) ? url : nil }
+    public func cachedURL(for release: IPSWRelease) -> URL? {
+        let url = destination(for: release)
+        return cachedMetadataMatches(release) && FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
     public func commit(partial: URL, release: IPSWRelease) throws -> URL {
         let fm = FileManager.default, target = destination(for: release); try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }; try fm.moveItem(at: partial, to: target)
@@ -100,6 +104,19 @@ public struct IPSWCache: Sendable {
         return removed
     }
     private func metadataData(for release: IPSWRelease) throws -> Data { let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return try encoder.encode(release) }
+    private func cachedMetadataMatches(_ release: IPSWRelease) -> Bool {
+        // macOS has one universal image per build. Mobile builds can contain
+        // several product-specific IPSWs at different URLs, so the metadata's
+        // authoritative product set must match before treating the build slot
+        // as a cache hit for a catalogue variant.
+        guard release.platform != .macOS else { return true }
+        let metadata = releaseDirectory(for: release).appendingPathComponent("metadata.json")
+        guard let data = try? Data(contentsOf: metadata), let stored = try? JSONDecoder().decode(IPSWRelease.self, from: data) else { return false }
+        return stored.platform == release.platform
+            && stored.version == release.version
+            && stored.build == release.build
+            && Set(stored.supportedDevices.map { $0.lowercased() }) == Set(release.supportedDevices.map { $0.lowercased() })
+    }
     private func fileSize(_ url: URL) -> Int64 { ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0 }
     private func safe(_ input: String) -> String { String(input.map { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" ? $0 : "-" }) }
 }
