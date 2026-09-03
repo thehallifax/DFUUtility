@@ -6,6 +6,7 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showVersions = false
     @State private var showImporter = false
     @State private var showDiagnostics = false
@@ -32,6 +33,10 @@ struct ContentView: View {
         }
         .padding(24)
         .task { await model.load() }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await model.runContinuousDiscovery()
+        }
         .sheet(isPresented: $showVersions) { VersionPicker(model: model, isPresented: $showVersions) }
         .sheet(isPresented: $showDiagnostics) { DiagnosticsView(report: model.doctorReport, shareableText: model.shareableDiagnosticsText, privilegeMode: model.privilegeMode, helperState: model.privilegedHelperState, registrationErrorDetails: model.helperRegistrationErrorDetails).frame(minWidth: 520, minHeight: 460).padding() }
         .sheet(isPresented: $showAbout) { AboutView().frame(minWidth: 520, minHeight: 420).padding() }
@@ -326,8 +331,12 @@ private struct DeviceSessionListView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var sessions: DeviceSessionManager
     var body: some View {
+        let summary = SessionWorkspaceSummary(sessions: sessions.sessions)
         VStack(alignment: .leading, spacing: 8) {
+            Text("\(summary.connected) Connected · \(summary.restoreReady) Restore Ready · \(summary.selected) Selected")
+                .font(.subheadline.weight(.medium)).accessibilityLabel("\(summary.connected) connected, \(summary.restoreReady) restore ready, \(summary.selected) selected")
             ForEach(sessions.sessions) { session in
+                let presentation = DeviceSessionPresentation(session: session, activeBatchIDs: model.batchCoordinator.frozenTargetIDs, currentBatchID: model.batchCoordinator.currentTargetID, batchIsRunning: model.batchCoordinator.isRunning)
                 HStack(spacing: 10) {
                     Toggle("", isOn: Binding(get: { session.isSelected }, set: { model.setSessionSelected(session.id, selected: $0) }))
                         .labelsHidden().toggleStyle(.checkbox).disabled(!session.hasSafeBatchIdentity)
@@ -336,9 +345,14 @@ private struct DeviceSessionListView: View {
                     Image(systemName: icon(for: session.device.family)).frame(width: 20)
                     Button { model.selectSessionForDetail(session.id) } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(session.device.friendlyName ?? session.device.family.displayName).font(.headline)
-                            Text("\(session.device.restoreProductType ?? "Unknown product") · \(session.device.state.rawValue) · \(session.shortIdentity)").font(.caption).foregroundStyle(.secondary)
-                            Text(status(session)).font(.caption).foregroundStyle(session.canRestore ? .green : .secondary)
+                            Text("\(session.device.family.displayName) · \(session.device.friendlyName ?? session.device.restoreProductType ?? "Unknown product")").font(.headline)
+                            Text([session.device.restoreProductType, session.device.state.rawValue].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                            if let firmware = presentation.firmware {
+                                Text([firmware, presentation.firmwareReadiness].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(presentation.firmwareReadiness == "Validated" ? .green : .secondary)
+                            }
+                            if let identity = presentation.identity { Text(identity).font(.caption2).foregroundStyle(.tertiary) }
+                            Text([presentation.capability, membershipText(presentation.batchMembership)].compactMap { $0 }.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(session.canRestore ? .green : .secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)
                     if case .running(_, let fraction) = session.operationState {
@@ -350,22 +364,23 @@ private struct DeviceSessionListView: View {
             }
             HStack {
                 Button("Select All Restore-Ready") { model.selectAllRestoreEligibleSessions() }
+                Button("Select Failed") { model.selectFailedSessions() }
+                    .disabled(!sessions.hasFailedCandidate(for: model.batchCoordinator.operationKind) || model.batchCoordinator.isRunning)
+                Button("Select Not Started") { model.selectNotStartedSessions() }
+                    .disabled(!sessions.hasNotStartedCandidate(for: model.batchCoordinator.operationKind) || model.batchCoordinator.isRunning)
                 Button("Clear Selection") { model.clearSessionSelection() }
                 Spacer()
-                Text("\(sessions.selectedSessions.count) selected").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
     private func icon(for family: AppleDeviceFamily) -> String { family == .mac ? "desktopcomputer" : family == .iPad ? "ipad" : "iphone" }
-    private func status(_ session: DeviceSession) -> String {
-        switch session.operationState {
-        case .idle: return session.canRestore ? "Ready to restore" : (session.restoreEligibilityFailure ?? "Not ready")
-        case .queued(let position, let total): return "Queued — device \(position) of \(total)"
-        case .running(let stage, let fraction): return fraction.map { "\(stage) — \(Int($0 * 100))%" } ?? stage
-        case .reconnecting: return "Waiting for restart…"
-        case .completed(let result): return "✓ \(result)"
-        case .failed(let result): return "✗ \(result)"
-        case .cancelled: return "Not started — batch stopped"
+    private func membershipText(_ state: BatchMembershipPresentation) -> String? {
+        switch state {
+        case .none: nil
+        case .active: "Active"
+        case .queued: "Queued in current batch"
+        case .currentBatch: "Current batch device"
+        case .notInCurrentBatch: "Not in current batch"
         }
     }
 }
@@ -401,15 +416,20 @@ private struct BatchRestoreControls: View {
             }
         }
         .sheet(isPresented: $confirming) {
+            let preflight = RestorePreflightPresentation(sessions: sessions.sessions)
             VStack(alignment: .leading, spacing: 14) {
                 Text("Restore \(sessions.selectedSessions.count) \(sessions.selectedSessions.count == 1 ? "device" : "devices")?").font(.title2.bold())
-                Text("This will erase the following targets. Operations run sequentially and remain individually ECID-targeted.").foregroundStyle(.secondary)
+                Text("\(preflight.selected) selected of \(preflight.connected) connected. \(preflight.excluded) connected \(preflight.excluded == 1 ? "device is" : "devices are") not included.").font(.headline)
+                Text("The selected devices will be erased and restored sequentially. Operations remain individually ECID-targeted.").foregroundStyle(.secondary)
+                if preflight.hasMixedFamilies { Label("Selected devices include multiple device families.", systemImage: "square.stack.3d.up.fill").foregroundStyle(.orange) }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(sessions.selectedSessions) { session in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("\(session.device.friendlyName ?? session.device.family.displayName) (\(session.device.restoreProductType ?? "Unknown")) — \(session.shortIdentity)").font(.headline)
                                 Text("Firmware: \(session.selectedRelease.map { "\($0.platform.displayName) \($0.version) (\($0.build))" } ?? session.selectedImageURL?.lastPathComponent ?? "Not selected")").font(.caption).foregroundStyle(.secondary)
+                                Label(session.firmwareState == .validated ? "Validated firmware" : "Firmware not validated", systemImage: session.firmwareState == .validated ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                                    .font(.caption).foregroundStyle(session.firmwareState == .validated ? .green : .orange)
                             }
                             Divider()
                         }

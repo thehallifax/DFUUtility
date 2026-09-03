@@ -79,6 +79,90 @@ public struct DeviceSession: Identifiable, Equatable, Sendable {
         guard let value = ecid ?? device.identifier ?? device.serialNumber else { return "Identity unavailable" }
         return value.count > 8 ? "…" + value.suffix(8) : value
     }
+
+    public var shortECID: String? { Self.privateSuffix(ecid) }
+    public var shortSerial: String? { Self.privateSuffix(device.serialNumber) }
+
+    private static func privateSuffix(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value.count > 4 ? "…" + value.suffix(4) : value
+    }
+}
+
+public enum BatchMembershipPresentation: Equatable, Sendable {
+    case none
+    case active
+    case queued
+    case currentBatch
+    case notInCurrentBatch
+}
+
+public struct DeviceSessionPresentation: Equatable, Sendable {
+    public let firmware: String?
+    public let firmwareReadiness: String?
+    public let capability: String
+    public let identity: String?
+    public let batchMembership: BatchMembershipPresentation
+
+    public init(session: DeviceSession, activeBatchIDs: [DeviceSessionID], currentBatchID: DeviceSessionID?, batchIsRunning: Bool) {
+        firmware = session.selectedRelease.map { "\($0.platform.displayName) \($0.version) (\($0.build))" }
+        firmwareReadiness = switch session.firmwareState {
+        case .validated: "Validated"
+        case .selected: "Not downloaded"
+        case .incompatible: "Incompatible"
+        case .invalid: "Invalid"
+        case .unselected: nil
+        }
+        let identities = [("ECID", session.shortECID), ("Serial", session.shortSerial)].compactMap { label, value in value.map { "\(label) \($0)" } }
+        identity = identities.isEmpty ? nil : identities.joined(separator: " · ")
+        if batchIsRunning {
+            if currentBatchID == session.id { batchMembership = .currentBatch }
+            else if activeBatchIDs.contains(session.id) {
+                if case .queued = session.operationState { batchMembership = .queued } else { batchMembership = .active }
+            } else { batchMembership = .notInCurrentBatch }
+        } else { batchMembership = .none }
+        capability = Self.capabilityText(session)
+    }
+
+    private static func capabilityText(_ session: DeviceSession) -> String {
+        switch session.operationState {
+        case .idle:
+            if session.canRestore { return "Ready to Restore" }
+            if session.reviveEligibilityFailure == nil { return "Revive available · \(session.restoreEligibilityFailure ?? "Restore unavailable")" }
+            return session.restoreEligibilityFailure ?? "Not ready"
+        case .queued(let position, let total): return "Queued — device \(position) of \(total)"
+        case .running(let stage, let fraction): return fraction.map { "\(stage) — \(Int($0 * 100))%" } ?? stage
+        case .reconnecting: return "Waiting for restart…"
+        case .completed(let result): return "✓ \(result)"
+        case .failed(let result): return "✗ \(result)"
+        case .cancelled: return "Not Started — batch stopped"
+        }
+    }
+}
+
+public struct SessionWorkspaceSummary: Equatable, Sendable {
+    public let connected: Int
+    public let restoreReady: Int
+    public let selected: Int
+    public init(sessions: [DeviceSession]) {
+        connected = sessions.filter(\.isConnected).count
+        restoreReady = sessions.filter { $0.isConnected && $0.canRestore }.count
+        selected = sessions.filter(\.isSelected).count
+    }
+}
+
+public struct RestorePreflightPresentation: Equatable, Sendable {
+    public let selected: Int
+    public let connected: Int
+    public let excluded: Int
+    public let hasMixedFamilies: Bool
+    public init(sessions: [DeviceSession]) {
+        let chosen = sessions.filter(\.isSelected)
+        selected = chosen.count
+        connected = sessions.filter(\.isConnected).count
+        excluded = sessions.filter { $0.isConnected && !$0.isSelected }.count
+        hasMixedFamilies = Set(chosen.map(\.device.family)).count > 1
+    }
 }
 
 @MainActor
@@ -89,21 +173,23 @@ public final class DeviceSessionManager: ObservableObject {
 
     public init() {}
 
-    public func reconcile(_ devices: [DFUDevice]) {
+    public func reconcile(_ devices: [DFUDevice], preservingDeviceStateFor protectedIDs: Set<DeviceSessionID> = []) {
         var unmatched = sessions
         var updated: [DeviceSession] = []
         for device in devices {
             if let index = unmatched.firstIndex(where: { Self.matches($0.device, device) }) {
                 var session = unmatched.remove(at: index)
-                session.device = Self.merge(device, with: session.device)
-                session.isConnected = true
+                if !protectedIDs.contains(session.id) {
+                    session.device = Self.merge(device, with: session.device)
+                    session.isConnected = true
+                }
                 updated.append(session)
             } else {
                 updated.append(DeviceSession(id: Self.identity(for: device), device: device))
             }
         }
-        for var session in unmatched where activeBatchIDs.contains(session.id) {
-            session.isConnected = false
+        for var session in unmatched where activeBatchIDs.contains(session.id) || protectedIDs.contains(session.id) {
+            if !protectedIDs.contains(session.id) { session.isConnected = false }
             updated.append(session)
         }
         sessions = updated.sorted { $0.id.value < $1.id.value }
@@ -114,6 +200,29 @@ public final class DeviceSessionManager: ObservableObject {
     }
     public func clearSelection() { mutateAll { $0.isSelected = false } }
     public func selectAllRestoreEligible() { mutateAll { $0.isSelected = $0.canRestore } }
+    public func selectFailed(for kind: BatchOperationKind?) {
+        mutateAll { session in
+            guard case .failed = session.operationState else { session.isSelected = false; return }
+            session.isSelected = session.isConnected && Self.isEligible(session, for: kind)
+        }
+    }
+    public func selectNotStarted(for kind: BatchOperationKind?) {
+        mutateAll { session in
+            guard case .cancelled = session.operationState else { session.isSelected = false; return }
+            session.isSelected = session.isConnected && Self.isEligible(session, for: kind)
+        }
+    }
+    public func hasFailedCandidate(for kind: BatchOperationKind?) -> Bool {
+        sessions.contains { session in
+            if case .failed = session.operationState { return session.isConnected && Self.isEligible(session, for: kind) }
+            return false
+        }
+    }
+    public func hasNotStartedCandidate(for kind: BatchOperationKind?) -> Bool {
+        sessions.contains { session in
+            session.operationState == .cancelled && session.isConnected && Self.isEligible(session, for: kind)
+        }
+    }
     public var selectedSessions: [DeviceSession] { sessions.filter(\.isSelected) }
 
     public func setFirmware(for id: DeviceSessionID, release: IPSWRelease?, url: URL?, validation: SessionFirmwareState) {
@@ -175,6 +284,14 @@ public final class DeviceSessionManager: ObservableObject {
 
     private func mutateAll(_ change: (inout DeviceSession) -> Void) {
         for index in sessions.indices { change(&sessions[index]) }
+    }
+    private static func isEligible(_ session: DeviceSession, for kind: BatchOperationKind?) -> Bool {
+        switch kind {
+        case .restore: session.restoreEligibilityFailure == nil
+        case .revive: session.reviveEligibilityFailure == nil
+        case .restart: session.restartEligibilityFailure == nil
+        case nil: false
+        }
     }
     private static func identity(for device: DFUDevice) -> DeviceSessionID {
         if let ecid = normalized(device.ecid) { return .init("ecid:\(ecid)") }
@@ -245,6 +362,10 @@ public final class BatchCoordinator: ObservableObject {
     }
 
     public var frozenTargetIDs: [DeviceSessionID] { sessions.activeBatchIDs }
+    public var currentTargetID: DeviceSessionID? {
+        guard let currentIndex, frozenTargetIDs.indices.contains(currentIndex) else { return nil }
+        return frozenTargetIDs[currentIndex]
+    }
     public func selectedEligibilityFailures(for kind: BatchOperationKind) -> [String] {
         sessions.selectedSessions.compactMap { session in
             switch kind { case .restore: session.restoreEligibilityFailure; case .revive: session.reviveEligibilityFailure; case .restart: session.restartEligibilityFailure }

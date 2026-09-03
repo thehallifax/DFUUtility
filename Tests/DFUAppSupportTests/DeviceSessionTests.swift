@@ -33,6 +33,110 @@ private func sessionDevice(_ family: AppleDeviceFamily, _ state: DeviceState, _ 
     #expect(manager.sessions[0].id != originalID); #expect(!manager.sessions[0].isSelected); #expect(manager.sessions[0].firmwareState == .unselected)
 }
 
+@Test @MainActor func completedBenchSetCanBeReplacedWithoutStateInheritance() {
+    let manager = DeviceSessionManager()
+    manager.reconcile((1...4).map { sessionDevice(.iPad, .recovery, "OLD-\($0)", product: "iPad12,1") })
+    for session in manager.sessions {
+        manager.select(session.id, selected: true)
+        manager.update(session.id) { $0.operationState = .completed("Restore complete") }
+    }
+    manager.reconcile((1...4).map { sessionDevice(.iPad, .recovery, "NEW-\($0)", product: "iPad12,1") })
+    #expect(manager.sessions.count == 4)
+    #expect(manager.sessions.allSatisfy { $0.ecid?.hasPrefix("NEW-") == true && !$0.isSelected && $0.operationState == .idle })
+}
+
+@Test @MainActor func replacementBesideCompletedDeviceRemainsDistinct() {
+    let manager = DeviceSessionManager()
+    manager.reconcile([sessionDevice(.iPhone, .recovery, "OLD", product: "iPhone15,2")])
+    let oldID = manager.sessions[0].id
+    manager.update(oldID) { $0.operationState = .completed("Done"); $0.isSelected = true }
+    manager.reconcile([
+        sessionDevice(.iPhone, .recovery, "OLD", product: "iPhone15,2"),
+        sessionDevice(.iPhone, .recovery, "NEW", product: "iPhone15,2")
+    ])
+    #expect(manager.sessions.count == 2)
+    #expect(manager.sessions.first { $0.id == oldID }?.operationState == .completed("Done"))
+    #expect(manager.sessions.first { $0.ecid == "NEW" }?.isSelected == false)
+    #expect(manager.sessions.first { $0.ecid == "NEW" }?.operationState == .idle)
+}
+
+@Test @MainActor func rowPresentationIsExactPrivateAndBatchDerived() {
+    let manager = DeviceSessionManager()
+    let release = IPSWRelease(platform: .iPadOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://example.invalid/pad")!, supportedDevices: ["iPad12,1"])
+    let device = DFUDevice(family: .iPad, state: .recovery, ecid: "0x12345678ABCD", productType: "iPad12,1", serialNumber: "SERIAL-1234WXYZ")
+    manager.reconcile([device])
+    let id = manager.sessions[0].id
+    manager.setFirmware(for: id, release: release, url: URL(fileURLWithPath: "/private/cache/image.ipsw"), validation: .validated)
+    manager.select(id, selected: true)
+    _ = manager.freezeSelectedBatch()
+    manager.update(id) { $0.operationState = .queued(position: 1, total: 1) }
+    let queued = DeviceSessionPresentation(session: manager.sessions[0], activeBatchIDs: manager.activeBatchIDs, currentBatchID: nil, batchIsRunning: true)
+    #expect(queued.firmware == "iPadOS 26.6.1 (23G83)")
+    #expect(queued.firmwareReadiness == "Validated")
+    #expect(queued.identity == "ECID …ABCD · Serial …WXYZ")
+    #expect(queued.identity?.contains("12345678") == false)
+    #expect(queued.batchMembership == .queued)
+    let excludedDevice = sessionDevice(.iPhone, .recovery, "UNRELATED-9999", product: "iPhone15,2")
+    manager.reconcile([device, excludedDevice])
+    let excluded = manager.sessions.first { $0.ecid == "UNRELATED-9999" }!
+    let presentation = DeviceSessionPresentation(session: excluded, activeBatchIDs: manager.activeBatchIDs, currentBatchID: id, batchIsRunning: true)
+    #expect(!excluded.isSelected); #expect(presentation.batchMembership == .notInCurrentBatch)
+    #expect(manager.activeBatchIDs == [id])
+}
+
+@Test @MainActor func capabilitySummaryAndRestorePreflightAreOperationAware() {
+    let manager = DeviceSessionManager()
+    manager.reconcile([
+        sessionDevice(.mac, .recovery, "MAC-1234", product: "Mac17,6"),
+        sessionDevice(.iPhone, .recovery, "PHONE-5678", product: "iPhone15,2"),
+        sessionDevice(.iPad, .normal, "PAD-9999", product: "iPad13,18")
+    ])
+    let mac = manager.sessions.first { $0.ecid == "MAC-1234" }!
+    let macPresentation = DeviceSessionPresentation(session: mac, activeBatchIDs: [], currentBatchID: nil, batchIsRunning: false)
+    #expect(macPresentation.capability == "Revive available · Restore requires DFU mode.")
+    for session in manager.sessions where session.ecid != "PAD-9999" {
+        manager.setFirmware(for: session.id, release: IPSWRelease(platform: session.device.family.restorePlatform, version: "1", build: session.device.family == .mac ? "MAC" : "PHONE", downloadURL: URL(string: "https://example.invalid/\(session.id.value)")!, supportedDevices: [session.device.restoreProductType!]), url: URL(fileURLWithPath: "/validated.ipsw"), validation: .validated)
+        manager.select(session.id, selected: true)
+    }
+    let summary = SessionWorkspaceSummary(sessions: manager.sessions)
+    #expect(summary == SessionWorkspaceSummary(sessions: manager.sessions))
+    #expect(summary.connected == 3); #expect(summary.restoreReady == 1); #expect(summary.selected == 2)
+    let preflight = RestorePreflightPresentation(sessions: manager.sessions)
+    #expect(preflight.selected == 2); #expect(preflight.connected == 3); #expect(preflight.excluded == 1); #expect(preflight.hasMixedFamilies)
+}
+
+@Test @MainActor func failedAndNotStartedHelpersOnlySelectEligibleConnectedCandidates() {
+    let manager = readyBatchManager(["FAILED", "SUCCESS", "CANCELLED", "DISCONNECTED"])
+    for session in manager.sessions {
+        manager.update(session.id) {
+            $0.operationState = switch session.ecid {
+            case "FAILED", "DISCONNECTED": .failed("Failed")
+            case "SUCCESS": .completed("Done")
+            default: .cancelled
+            }
+        }
+    }
+    manager.select(manager.sessions.first { $0.ecid == "FAILED" }!.id, selected: true)
+    _ = manager.freezeSelectedBatch()
+    manager.reconcile(manager.sessions.filter { $0.ecid != "DISCONNECTED" }.map(\.device))
+    manager.selectFailed(for: .restore)
+    #expect(manager.selectedSessions.map(\.ecid) == ["FAILED"])
+    manager.selectNotStarted(for: .restore)
+    #expect(manager.selectedSessions.map(\.ecid) == ["CANCELLED"])
+    #expect(manager.sessions.first { $0.ecid == "SUCCESS" }?.isSelected == false)
+    #expect(manager.sessions.first { $0.ecid == "DISCONNECTED" }?.isSelected == false)
+}
+
+@Test @MainActor func protectedPollingSnapshotCannotOverwriteOperationOwnedReconnectState() {
+    let manager = DeviceSessionManager()
+    manager.reconcile([sessionDevice(.iPhone, .recovery, "SAME", product: "iPhone15,2")])
+    let id = manager.sessions[0].id
+    manager.update(id) { $0.operationState = .reconnecting; $0.device = sessionDevice(.iPhone, .normal, "SAME", product: "iPhone15,2") }
+    manager.reconcile([sessionDevice(.iPhone, .recovery, "SAME", product: "iPhone15,2")], preservingDeviceStateFor: [id])
+    #expect(manager.sessions[0].device.state == .normal)
+    #expect(manager.sessions[0].operationState == .reconnecting)
+}
+
 @Test @MainActor func identityFallbackIsExplicitAndUnaddressableDevicesDoNotInheritState() {
     let manager = DeviceSessionManager()
     manager.reconcile([sessionDevice(.iPhone, .normal, nil, product: "iPhone15,2", udid: "UDID-1")])

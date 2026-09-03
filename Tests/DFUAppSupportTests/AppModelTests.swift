@@ -123,6 +123,21 @@ private final class CountingRestore: @unchecked Sendable, RestoreOperating {
     func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> { lock.withLock { calls += 1 }; return AsyncThrowingStream { $0.finish() } }
     var callCount: Int { lock.withLock { calls } }
 }
+private final class CountingHoldingRestore: @unchecked Sendable, RestoreOperating {
+    private let lock = NSLock(); private var actions: [RestoreAction] = []
+    func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> {
+        lock.withLock { actions.append(action) }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                continuation.yield(.preparing)
+                try? await Task.sleep(for: .milliseconds(300))
+                continuation.yield(.completed); continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+    var callCount: Int { lock.withLock { actions.count } }
+}
 private struct HoldingRestore: RestoreOperating {
     func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -917,6 +932,93 @@ private let noOpLogger = AppMockLogger()
     await app.refreshDiagnosticsAndTarget(); #expect(app.target?.state == .normal)
     await app.refreshDiagnosticsAndTarget(); #expect(app.target?.state == .recovery); #expect(app.selectedTargetECID == "0xABC")
     await app.refreshDiagnosticsAndTarget(); #expect(app.targetDevices.isEmpty); #expect(app.target == nil); #expect(app.selectedTargetECID == nil)
+}
+
+@Test @MainActor func continuousDiscoveryAddsAnExcludedFifthDeviceWithoutExecutingWork() async {
+    let firstFour = (1...4).map { DFUDevice(family: .iPhone, state: .recovery, ecid: "PHONE-\($0)", productType: "iPhone15,2") }
+    let fifth = DFUDevice(family: .iPad, state: .recovery, ecid: "PAD-5", productType: "iPad13,18")
+    let discovery = AppSequencedDiscovery([firstFour, firstFour + [fifth]])
+    let restore = CountingRestore(), service = TrackingIPSWService(releases: [])
+    let app = AppModel(ipswService: service, discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: restore, dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load()
+    for session in app.deviceSessions.sessions { app.setSessionSelected(session.id, selected: true) }
+    let frozen = app.deviceSessions.freezeSelectedBatch().map(\.id)
+    await app.pollDeviceDiscovery()
+    let added = try! #require(app.deviceSessions.sessions.first { $0.ecid == "PAD-5" })
+    #expect(!added.isSelected)
+    #expect(app.deviceSessions.activeBatchIDs == frozen)
+    #expect(!app.deviceSessions.activeBatchIDs.contains(added.id))
+    #expect(DeviceSessionPresentation(session: added, activeBatchIDs: frozen, currentBatchID: frozen.first, batchIsRunning: true).batchMembership == .notInCurrentBatch)
+    #expect(restore.callCount == 0)
+    #expect(service.eventRequests == 0)
+}
+
+@Test @MainActor func pollingDuringRealFrozenBatchCannotAddOrExecuteReplacement() async throws {
+    let original = DFUDevice(family: .iPhone, state: .recovery, ecid: "ORIGINAL", productType: "iPhone15,2")
+    let newcomer = DFUDevice(family: .iPhone, state: .recovery, ecid: "NEWCOMER", productType: "iPhone15,2")
+    let discovery = AppSequencedDiscovery([[original], [original, newcomer]])
+    let restore = CountingHoldingRestore()
+    let app = AppModel(ipswService: AppMockService(releases: []), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: restore, dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, reconnectAttempts: 1, reconnectInterval: .zero)
+    await app.load()
+    let originalID = try #require(app.deviceSessions.sessions.first?.id)
+    app.deviceSessions.setFirmware(for: originalID, release: nil, url: URL(fileURLWithPath: "/validated.ipsw"), validation: .validated)
+    app.setSessionSelected(originalID, selected: true)
+    app.startBatchRestore()
+    try await Task.sleep(for: .milliseconds(30))
+    let frozen = app.batchCoordinator.frozenTargetIDs
+    #expect(app.batchCoordinator.isRunning); #expect(restore.callCount == 1)
+    await app.pollDeviceDiscovery()
+    let added = try #require(app.deviceSessions.sessions.first { $0.ecid == "NEWCOMER" })
+    #expect(!added.isSelected); #expect(app.batchCoordinator.frozenTargetIDs == frozen); #expect(!frozen.contains(added.id))
+    #expect(restore.callCount == 1)
+    app.stopBatchAfterCurrentTarget()
+    while app.batchCoordinator.isRunning { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(restore.callCount == 1)
+}
+
+@Test @MainActor func continuousDiscoveryAutoAssignsOnlyExistingValidatedCompatibleMobileCache() async throws {
+    let release = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G83", downloadURL: URL(string: "https://example.invalid/phone.ipsw")!, supportedDevices: ["iPhone15,2"])
+    let cache = tempCache(); let cached = try addValidatedCacheFixture(release, to: cache)
+    let phone = DFUDevice(family: .iPhone, state: .normal, ecid: "NEW-PHONE", productType: "iPhone15,2")
+    let service = TrackingIPSWService(releases: [release])
+    let app = AppModel(ipswService: service, discovery: AppSequencedDiscovery([[], [phone]]), cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load(); await app.pollDeviceDiscovery()
+    let session = try #require(app.deviceSessions.sessions.first)
+    #expect(session.selectedRelease == release); #expect(session.selectedImageURL?.resolvingSymlinksInPath() == cached.resolvingSymlinksInPath())
+    #expect(session.firmwareState == .validated); #expect(!session.isSelected); #expect(!session.canRestore)
+    #expect(service.eventRequests == 0)
+}
+
+@Test @MainActor func continuousDiscoveryLeavesNewDeviceUnassignedWithoutValidatedCompatibleCache() async throws {
+    let incompatible = IPSWRelease(platform: .iOS, version: "26.6.1", build: "OTHER", downloadURL: URL(string: "https://example.invalid/other.ipsw")!, supportedDevices: ["iPhone16,1"])
+    let phone = DFUDevice(family: .iPhone, state: .recovery, ecid: "NEW-PHONE", productType: "iPhone15,2")
+    let service = TrackingIPSWService(releases: [incompatible])
+    let app = AppModel(ipswService: service, discovery: AppSequencedDiscovery([[], [phone]]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load(); await app.pollDeviceDiscovery()
+    let session = try #require(app.deviceSessions.sessions.first)
+    #expect(session.firmwareState == .unselected); #expect(session.selectedRelease == nil); #expect(!session.isSelected); #expect(!session.canRestore)
+    #expect(service.eventRequests == 0)
+}
+
+@Test @MainActor func continuousDiscoveryPreservesSameIdentityAndOwnedSessionStateAcrossOrdering() async throws {
+    let a = DFUDevice(family: .iPhone, state: .recovery, ecid: "A", productType: "iPhone15,2")
+    let b = DFUDevice(family: .iPad, state: .recovery, ecid: "B", productType: "iPad13,18")
+    let app = AppModel(ipswService: AppMockService(releases: []), discovery: AppSequencedDiscovery([[a, b], [b, a]]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load()
+    let original = try #require(app.deviceSessions.sessions.first { $0.ecid == "A" })
+    app.setSessionSelected(original.id, selected: true)
+    app.deviceSessions.update(original.id) { $0.operationState = .failed("Owned result"); $0.generation = 9 }
+    await app.pollDeviceDiscovery()
+    let retained = try #require(app.deviceSessions.sessions.first { $0.ecid == "A" })
+    #expect(retained.id == original.id); #expect(retained.isSelected); #expect(retained.generation == 9); #expect(retained.operationState == .failed("Owned result"))
+}
+
+@Test @MainActor func cancelledContinuousDiscoveryLoopDoesNotPoll() async {
+    let discovery = CountingAppDiscovery([])
+    let app = AppModel(ipswService: AppMockService(), discovery: discovery, cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    let task = Task { await app.runContinuousDiscovery(interval: .seconds(10)) }
+    task.cancel(); await task.value
+    #expect(discovery.callCount == 0)
 }
 
 @Test @MainActor func guiUsesOneGeneralizedDiscoverySnapshotForCardAndDiagnostics() async {

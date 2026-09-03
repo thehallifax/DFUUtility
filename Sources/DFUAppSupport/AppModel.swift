@@ -220,6 +220,7 @@ public final class AppModel: ObservableObject {
     private var operationTask: Task<Void, Never>?
     private var operationGeneration: UInt64 = 0
     private var batchFollowupTask: Task<Void, Never>?
+    private var discoveryRevision: UInt64 = 0
     private var observations: Set<AnyCancellable> = []
     private var catalogueReleases: [IPSWRelease] = []
     private var validatedCacheEntries: [FirmwareReleaseKey: ManagedIPSWEntry] = [:]
@@ -417,6 +418,33 @@ public final class AppModel: ObservableObject {
         Task { await updateCoordinator.automaticCheckIfDue(disabled: isDemoMode || isScreenshotPresentation) }
     }
 
+    /// Owns the single conservative bench-discovery loop. The SwiftUI scene
+    /// runs this only while active; cancellation stops it without side effects.
+    public func runContinuousDiscovery(interval: Duration = .seconds(5)) async {
+        guard !isDemoMode, !isUpdateTestMode, !isScreenshotPresentation else { return }
+        while !Task.isCancelled {
+            do { try await Task.sleep(for: interval) } catch { return }
+            await pollDeviceDiscovery()
+        }
+    }
+
+    /// Read-only discovery/reconciliation used by the bench loop. Failures are
+    /// intentionally silent and retain the last valid session snapshot.
+    public func pollDeviceDiscovery() async {
+        guard !isDemoMode, !isUpdateTestMode, !isScreenshotPresentation else { return }
+        var protectedIDs = Set(deviceSessions.sessions.compactMap { session -> DeviceSessionID? in
+            switch session.operationState {
+            case .running, .reconnecting: session.id
+            default: nil
+            }
+        })
+        if operationInProgress, let selectedTargetECID,
+           let id = deviceSessions.sessions.first(where: { $0.ecid?.caseInsensitiveCompare(selectedTargetECID) == .orderedSame })?.id {
+            protectedIDs.insert(id)
+        }
+        await reconcileDiscovery(showFailure: false, attempts: 1, preservingDeviceStateFor: protectedIDs)
+    }
+
     public func checkForUpdates(manual: Bool = true) async {
         guard !isDemoMode, !isScreenshotPresentation else { return }
         await updateCoordinator.check(manual: manual)
@@ -520,14 +548,35 @@ public final class AppModel: ObservableObject {
             operationTask?.cancel(); operationTask = nil
             restoreState = .completed("\(operation) completed successfully. Target restart could not be verified.")
         }
-        let previousContext = target.map(TargetContext.init)
         if privilegeMode == .signedHelper { privilegedHelperState = await Task.detached { PrivilegedDFUClient().state() }.value }
+        await reconcileDiscovery(showFailure: true, attempts: targetDiscoveryAttempts)
+        do {
+            let diagnostics = diagnostics, targets = targetDevices
+            let report = try await Task.detached { try diagnostics.report(targets: targets) }.value
+            doctorReport = Self.report(report, replacingTargetsWith: targets)
+        } catch { presentedError = error.localizedDescription }
+    }
+
+    private func reconcileDiscovery(showFailure: Bool, attempts: Int, preservingDeviceStateFor protectedIDs: Set<DeviceSessionID> = []) async {
+        discoveryRevision &+= 1
+        let revision = discoveryRevision
+        let previousContext = target.map(TargetContext.init)
         do {
             let discovery = discovery
-            let discovered = try await Self.discoverTargets(using: discovery, attempts: targetDiscoveryAttempts)
+            let discovered = try await Self.discoverTargets(using: discovery, attempts: attempts)
+            guard revision == discoveryRevision else { return }
+            var effectiveDevices = discovered
+            for protectedID in protectedIDs {
+                guard let protected = deviceSessions.sessions.first(where: { $0.id == protectedID }) else { continue }
+                if let index = effectiveDevices.firstIndex(where: { Self.sameStableDevice($0, protected.device) }) {
+                    effectiveDevices[index] = protected.device
+                } else {
+                    effectiveDevices.append(protected.device)
+                }
+            }
             let existingSessionIDs = Set(deviceSessions.sessions.map(\.id))
-            targetDevices = discovered
-            deviceSessions.reconcile(discovered)
+            targetDevices = effectiveDevices
+            deviceSessions.reconcile(effectiveDevices, preservingDeviceStateFor: protectedIDs)
             let newSessionIDs = Set(deviceSessions.sessions.map(\.id)).subtracting(existingSessionIDs)
             if targetDevices.count == 1 { selectedTargetECID = targetDevices[0].ecid }
             else if !targetDevices.contains(where: { $0.ecid == selectedTargetECID }) { selectedTargetECID = nil }
@@ -536,12 +585,16 @@ public final class AppModel: ObservableObject {
             refreshImageChoices()
             if targetChanged { await refreshCatalogue() }
             await autoAssignCachedFirmware(to: newSessionIDs)
-        } catch { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
-        do {
-            let diagnostics = diagnostics, targets = targetDevices
-            let report = try await Task.detached { try diagnostics.report(targets: targets) }.value
-            doctorReport = Self.report(report, replacingTargetsWith: targets)
-        } catch { presentedError = error.localizedDescription }
+        } catch {
+            if showFailure && revision == discoveryRevision { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
+        }
+    }
+
+    private nonisolated static func sameStableDevice(_ lhs: DFUDevice, _ rhs: DFUDevice) -> Bool {
+        if let left = lhs.ecid, let right = rhs.ecid { return left.caseInsensitiveCompare(right) == .orderedSame }
+        if let left = lhs.identifier, let right = rhs.identifier { return left.caseInsensitiveCompare(right) == .orderedSame }
+        if let left = lhs.serialNumber, let right = rhs.serialNumber { return left.caseInsensitiveCompare(right) == .orderedSame }
+        return false
     }
 
     private nonisolated static func discoverTargets(using discovery: any DeviceDiscovering, attempts: Int = 3, retryDelay: Duration = .milliseconds(400)) async throws -> [DFUDevice] {
@@ -593,6 +646,8 @@ public final class AppModel: ObservableObject {
     }
     public func setSessionSelected(_ id: DeviceSessionID, selected: Bool) { deviceSessions.select(id, selected: selected) }
     public func selectAllRestoreEligibleSessions() { deviceSessions.selectAllRestoreEligible() }
+    public func selectFailedSessions() { deviceSessions.selectFailed(for: batchCoordinator.operationKind) }
+    public func selectNotStartedSessions() { deviceSessions.selectNotStarted(for: batchCoordinator.operationKind) }
     public func clearSessionSelection() { deviceSessions.clearSelection() }
     public func applyCurrentFirmwareToSelectedSessions() {
         deviceSessions.applySharedFirmware(release: selectedRelease, url: imageURL, to: Set(deviceSessions.selectedSessions.map(\.id)))
