@@ -404,6 +404,11 @@ public final class AppModel: ObservableObject {
         guard !isDemoMode, !isUpdateTestMode, let target, !operationInProgress else { return false }
         return target.family == .mac ? (target.state == .dfu || target.state == .recovery) : target.state == .recovery
     }
+    public var canRestart: Bool {
+        guard !isDemoMode, !isUpdateTestMode, let session = detailedSession, !operationInProgress else { return false }
+        return session.restartEligibilityFailure == nil
+    }
+    public var restartUnavailableMessage: String { detailedSession?.restartEligibilityFailure ?? "Restart is unavailable for the selected device." }
     public func load() async {
         if isUpdateTestMode {
             targetDevices = []; selectedTargetECID = nil
@@ -1072,6 +1077,10 @@ public final class AppModel: ObservableObject {
     public func revive() {
         guard canRevive, let target else { presentedError = "No supported real target is connected for revive."; return }
         runRestore(targetDevices.count > 1 && target.ecid != nil ? .targetedRevive(ecid: target.ecid!) : .revive)
+    }
+    public func restart() {
+        guard canRestart, let target else { presentedError = restartUnavailableMessage; return }
+        runRestore(targetDevices.count > 1 && target.ecid != nil ? .targetedReboot(ecid: target.ecid!) : .reboot)
     }
     private func runRestore(_ action: RestoreAction) {
         guard !operationInProgress else { return }

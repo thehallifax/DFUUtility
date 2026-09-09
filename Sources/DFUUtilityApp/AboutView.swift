@@ -2,20 +2,22 @@ import DFUCore
 import SwiftUI
 
 struct AboutView: View {
-    @Environment(\.dismiss) private var dismiss
+    @State private var showLicense = false
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("DFUUtility").font(.largeTitle.bold())
             Text("Version \(BuildMetadata.displayVersion)")
             Text("Community build").font(.headline).foregroundStyle(.secondary)
-            Text("DFUUtility — Apache License 2.0")
+            Text("DFUUtility is licensed under the Apache License 2.0.")
             Divider()
             Text("Third-party software").font(.title2.bold())
             Text("macvdmtool — Asahi Linux — Apache License 2.0")
             Link("Upstream project", destination: URL(string: "https://github.com/AsahiLinux/macvdmtool")!)
-            ScrollView { Text(licenseText).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+            DisclosureGroup("View License", isExpanded: $showLicense) {
+                ScrollView { Text(licenseText).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
+                    .frame(minHeight: 180)
+            }
             Spacer()
-            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
         }
     }
     private var licenseText: String {

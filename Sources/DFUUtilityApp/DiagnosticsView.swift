@@ -3,9 +3,9 @@ import DFUCore
 import SwiftUI
 
 struct DiagnosticsView: View {
-    @Environment(\.dismiss) private var dismiss
     @State private var confirmation: String?
     @State private var saveError: String?
+    @State private var showTechnicalDetails = false
     let report: DoctorReport?
     let shareableText: String
     var privilegeMode: PrivilegeMode = PrivilegeModeSelector.select()
@@ -16,14 +16,14 @@ struct DiagnosticsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Diagnostics").font(.title.bold())
-            Text("Detailed local diagnostics are shown below. Copy and Save create a sanitized report suitable for sharing.").font(.caption).foregroundStyle(.secondary)
+            Text("Host readiness and sanitized support information for this Mac.").font(.caption).foregroundStyle(.secondary)
             accessoryReadiness
-            ScrollView { Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-            if let confirmation { Text(confirmation).font(.caption).foregroundStyle(.secondary).accessibilityLabel(confirmation) }
-            ViewThatFits(in: .horizontal) {
-                HStack { actionButtons; Spacer(); doneButton }
-                VStack(alignment: .leading, spacing: 8) { actionButtons; doneButton }
+            DisclosureGroup("Show Technical Details", isExpanded: $showTechnicalDetails) {
+                ScrollView { Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
+                    .frame(minHeight: 180)
             }
+            if let confirmation { Text(confirmation).font(.caption).foregroundStyle(.secondary).accessibilityLabel(confirmation) }
+            actionButtons
         }
         .alert("Unable to Save Diagnostics", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
             Button("OK") { saveError = nil }
@@ -55,8 +55,6 @@ struct DiagnosticsView: View {
         }
         Button("Save Sanitized Diagnostics…") { save() }
     }
-    private var doneButton: some View { Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
-
     private func save() {
         let panel = NSSavePanel(); panel.nameFieldStringValue = "DFUUtility-Diagnostics.txt"; panel.allowedContentTypes = [.plainText]
         guard panel.runModal() == .OK, let url = panel.url else { return }

@@ -104,5 +104,6 @@ public enum ImageDownloadPresentationState: Equatable, Sendable {
 
 public struct MainWindowConfiguration: Equatable, Sendable {
     public let defaultWidth: Double, defaultHeight: Double, minimumWidth: Double, minimumHeight: Double, maximumWorkspaceWidth: Double
-    public static let standard = Self(defaultWidth: 1040, defaultHeight: 800, minimumWidth: 760, minimumHeight: 500, maximumWorkspaceWidth: 1160)
+    public let sidebarMinimumWidth: Double, sidebarIdealWidth: Double, sidebarMaximumWidth: Double
+    public static let standard = Self(defaultWidth: 1040, defaultHeight: 800, minimumWidth: 760, minimumHeight: 500, maximumWorkspaceWidth: 1160, sidebarMinimumWidth: 240, sidebarIdealWidth: 260, sidebarMaximumWidth: 320)
 }
