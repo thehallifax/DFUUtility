@@ -45,9 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if scenario == "multiple-devices" {
             root = AnyView(ContentView(model: model))
             size = NSSize(width: 1040, height: 1000)
-        } else if scenario == "device-capture" {
+        } else if scenario.hasPrefix("device-capture") {
             root = AnyView(ContentView(model: model))
-            size = NSSize(width: 1240, height: 860)
+            if scenario.contains("narrow") {
+                size = NSSize(width: 820, height: 620)
+            } else if scenario.contains("default") {
+                size = NSSize(width: 1040, height: 800)
+            } else {
+                size = NSSize(width: 1240, height: 860)
+            }
         } else if scenario == "diagnostics" || scenario == "firmware-library" {
             root = AnyView(ContentView(model: model))
             size = NSSize(width: 1040, height: 800)

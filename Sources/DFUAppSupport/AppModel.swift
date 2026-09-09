@@ -494,6 +494,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func configureScreenshot(_ scenario: String) {
+        let isDeviceCaptureScenario = scenario.hasPrefix("device-capture")
         let macRelease = DemoFirmwareLibrary.catalogueReleases.first { $0.platform == .macOS }!
         let latestIOS = DemoFirmwareLibrary.catalogueReleases.first { $0.platform == .iOS }!
         let cachedIOS = DemoFirmwareLibrary.cachedEntries.first { $0.release.platform == .iOS }!.release
@@ -511,8 +512,12 @@ public final class AppModel: ObservableObject {
         case "completed-restore", "completed":
             targetDevices = [DFUDevice(family: .iPhone, state: .normal, model: "iPhone 14 Pro", ecid: "DEMO-PHONE-001", productType: "iPhone15,2")]
         case "mac-dfu-verification": targetDevices = []
-        case "multiple-devices", "device-capture": targetDevices = []; deviceSessions.configureDemo()
+        case "multiple-devices": targetDevices = []; deviceSessions.configureDemo()
         default: targetDevices = []
+        }
+        if isDeviceCaptureScenario {
+            targetDevices = []
+            deviceSessions.configureDemo()
         }
         managedCacheEntries = DemoFirmwareLibrary.cachedEntries
         validatedCacheEntries = Dictionary(uniqueKeysWithValues: managedCacheEntries.map { (FirmwareReleaseKey($0.release), $0) })
@@ -532,8 +537,8 @@ public final class AppModel: ObservableObject {
             restoreState = .completed("Restore completed successfully. Target restarted.")
         }
         selectedTargetECID = targetDevices.count == 1 ? targetDevices[0].ecid : nil
-        if scenario != "multiple-devices" && scenario != "device-capture" { deviceSessions.reconcile(targetDevices) }
-        if scenario == "device-capture" {
+        if scenario != "multiple-devices" && !isDeviceCaptureScenario { deviceSessions.reconcile(targetDevices) }
+        if isDeviceCaptureScenario {
             for (index, session) in deviceSessions.sessions.prefix(3).enumerated() {
                 if index == 0 {
                     var device = session.device

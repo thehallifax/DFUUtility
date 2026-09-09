@@ -34,7 +34,7 @@ struct ContentView: View {
         .frame(minWidth: 920, minHeight: 620)
         .task {
             await model.load()
-            if model.screenshotPresentationScenario == "device-capture" {
+            if model.screenshotPresentationScenario?.hasPrefix("device-capture") == true {
                 destination = .deviceCapture
             } else if model.screenshotPresentationScenario == "diagnostics" {
                 destination = .diagnostics
@@ -279,7 +279,11 @@ struct ContentView: View {
     }
 
     private var captureWorkspace: some View {
-        workspaceScroll { DeviceCaptureView(model: model) }
+        ScrollView {
+            DeviceCaptureView(model: model)
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     @ViewBuilder private func deviceWorkspace(id: DeviceSessionID) -> some View {
@@ -365,8 +369,8 @@ struct ContentView: View {
     }
 
     private func firmwareCard(_ session: DeviceSession) -> some View {
-        GroupBox {
-            firmwareForDevice(session).padding(8)
+        WorkspacePanel("Firmware for this device", systemImage: "shippingbox") {
+            firmwareForDevice(session, showHeading: false)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -447,9 +451,11 @@ struct ContentView: View {
         } label: { Label("Target Device", systemImage: model.target?.family == .mac ? "desktopcomputer" : "iphone") }
     }
 
-    @ViewBuilder private func firmwareForDevice(_ session: DeviceSession) -> some View {
+    @ViewBuilder private func firmwareForDevice(_ session: DeviceSession, showHeading: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label("Firmware for this device", systemImage: "shippingbox").font(.headline)
+            if showHeading {
+                Label("Firmware for this device", systemImage: "shippingbox").font(.headline)
+            }
             if let release = session.selectedRelease {
                 Text("\(release.platform.displayName) \(release.version)").font(.title3.bold())
                 LabeledContent("Build", value: release.build)
