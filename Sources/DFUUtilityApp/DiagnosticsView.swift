@@ -34,26 +34,38 @@ struct DiagnosticsView: View {
         let readiness = AccessoryConnectionReadiness()
         return GroupBox("Host Readiness") {
             VStack(alignment: .leading, spacing: 6) {
-                Label("Accessory Connections", systemImage: "cable.connector")
-                    .font(.headline)
+                HStack(alignment: .firstTextBaseline) {
+                    Label("Accessory Connections", systemImage: "cable.connector").font(.headline)
+                    Spacer()
+                    StatusBadge(title: "Read-only check", tint: .secondary, systemImage: "eye")
+                }
                 Text(readiness.detectedState).font(.caption).foregroundStyle(.secondary)
-                Text("Check: Privacy & Security → Accessories → Allow accessories to connect")
-                    .font(.caption)
-                Text("For a dedicated, trusted DFU workstation, **Automatically allow when unlocked** reduces repeated approvals while keeping authorization restricted when the Mac is locked.")
-                    .font(.caption)
-                Text("**Always allow** reduces prompts further, but permits new wired accessories without individual approval. Consider it only for a physically controlled technician bench, not as a blanket recommendation for a personal Mac.")
-                    .font(.caption).foregroundStyle(.secondary)
+                WorkspacePanel(systemImage: "gearshape") {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Check in System Settings") .font(.subheadline.weight(.semibold))
+                        Text("Privacy & Security → Accessories → Allow accessories to connect")
+                            .font(.caption)
+                        Text("For a dedicated, trusted DFU workstation, **Automatically allow when unlocked** reduces repeated approvals while keeping authorization restricted when the Mac is locked.")
+                            .font(.caption)
+                        Text("**Always allow** reduces prompts further, but permits new wired accessories without individual approval. Consider it only for a physically controlled technician bench, not as a blanket recommendation for a personal Mac.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     @ViewBuilder private var actionButtons: some View {
-        Button("Copy Sanitized Diagnostics") {
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(shareableText, forType: .string)
-            confirmation = "Sanitized diagnostics copied."
+        WorkspacePanel("Support Tools", systemImage: "square.and.arrow.up") {
+            HStack(spacing: 8) {
+                Button("Copy Sanitized Diagnostics") {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(shareableText, forType: .string)
+                    confirmation = "Sanitized diagnostics copied."
+                }
+                Button("Save Sanitized Diagnostics…") { save() }
+            }
         }
-        Button("Save Sanitized Diagnostics…") { save() }
     }
     private func save() {
         let panel = NSSavePanel(); panel.nameFieldStringValue = "DFUUtility-Diagnostics.txt"; panel.allowedContentTypes = [.plainText]

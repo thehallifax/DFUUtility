@@ -48,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if scenario == "device-capture" {
             root = AnyView(ContentView(model: model))
             size = NSSize(width: 1240, height: 860)
+        } else if scenario == "diagnostics" || scenario == "firmware-library" {
+            root = AnyView(ContentView(model: model))
+            size = NSSize(width: 1040, height: 800)
         } else {
             root = AnyView(ContentView(model: model))
             size = NSSize(width: 900, height: 760)

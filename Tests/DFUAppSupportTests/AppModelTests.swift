@@ -793,6 +793,19 @@ private let noOpLogger = AppMockLogger()
     #expect(content.contains("DeviceCaptureQRCode.payload(for: record)"))
 }
 
+@Test func visualParityUsesSharedPanelsAndResponsiveActions() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let content = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/ContentView.swift"), encoding: .utf8)
+    let styles = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/VisualComponents.swift"), encoding: .utf8)
+    #expect(styles.contains("struct WorkspacePanel")); #expect(styles.contains("struct StatusBadge")); #expect(styles.contains("struct ActionTile"))
+    #expect(content.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 220)"))
+    #expect(content.contains("DeviceStateBadge(state: session.device.state)"))
+    #expect(content.contains("Restore using selected firmware.")); #expect(content.contains("Put this Mac into DFU mode."))
+    #expect(!content.contains("Button(\"Done\")"))
+    let capture = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/DeviceCaptureView.swift"), encoding: .utf8)
+    #expect(capture.contains("tableHeight")); #expect(capture.contains("WorkspacePanel(\"Asset Tag\"")); #expect(capture.contains("WorkspacePanel(\"Copy Identifiers\""))
+}
+
 @Test @MainActor func removingSelectedManagedImageInvalidatesMainCardAndRefreshesManager() async throws {
     let value = makeRelease(), cache = tempCache(); try cache.prepare(for: value); try Data("valid".utf8).write(to: cache.partialURL(for: value)); let ready = try cache.commit(partial: cache.partialURL(for: value), release: value)
     let app = model(service: AppMockService(releases: [value]), cache: cache); await app.load(); await app.refreshManagedCache()

@@ -36,6 +36,10 @@ struct ContentView: View {
             await model.load()
             if model.screenshotPresentationScenario == "device-capture" {
                 destination = .deviceCapture
+            } else if model.screenshotPresentationScenario == "diagnostics" {
+                destination = .diagnostics
+            } else if model.screenshotPresentationScenario == "firmware-library" {
+                destination = .firmware
             } else if destination == .restoreRevive, model.deviceSessions.sessions.filter(\.isConnected).count == 1,
                let session = model.deviceSessions.sessions.first(where: \.isConnected) {
                 model.selectSessionForDetail(session.id)
@@ -78,11 +82,7 @@ struct ContentView: View {
     @ViewBuilder private var navigationRoot: some View {
         if model.isScreenshotPresentation {
             HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    Text("DFUUtility").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 14)
-                    Divider()
-                    screenshotSidebar
-                }
+                screenshotSidebar
                 .frame(width: MainWindowConfiguration.standard.sidebarIdealWidth)
                 Divider()
                 workspace.frame(maxWidth: .infinity)
@@ -103,7 +103,14 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        List(selection: $destination) {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("DFUUtility").font(.title3.bold())
+                Text("Restore and revive Macs, iPhones and iPads.")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            List(selection: $destination) {
             Section("Devices") {
                 let connected = model.deviceSessions.sessions.filter(\.isConnected)
                 if connected.isEmpty {
@@ -115,10 +122,15 @@ struct ContentView: View {
                             model.selectSessionForDetail(session.id)
                             destination = .device(session.id)
                         } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(session.device.friendlyName ?? session.device.family.displayName).lineLimit(1)
-                                Text([session.device.restoreProductType, session.device.state.rawValue].compactMap { $0 }.joined(separator: " · "))
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            HStack(spacing: 8) {
+                                Image(systemName: deviceFamilySymbol(session.device.family)).frame(width: 18)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(session.device.friendlyName ?? session.device.family.displayName).lineLimit(1)
+                                    HStack(spacing: 5) {
+                                        Text([session.device.restoreProductType].compactMap { $0 }.joined(separator: " · "))
+                                        DeviceStateBadge(state: session.device.state)
+                                    }.font(.caption).lineLimit(1)
+                                }
                             }
                         }
                         .buttonStyle(.plain)
@@ -141,8 +153,9 @@ struct ContentView: View {
                     .disabled(model.isDemoMode || model.isScreenshotPresentation || model.updateCoordinator.state == .checking)
                 Label("About", systemImage: "info.circle").tag(SidebarDestination.about)
             }
+            }
+            .listStyle(.sidebar)
         }
-        .listStyle(.sidebar)
         .navigationTitle("DFUUtility")
         .safeAreaInset(edge: .bottom) {
             if model.isDemoMode || model.isUpdateTestMode {
@@ -158,16 +171,26 @@ struct ContentView: View {
     private var screenshotSidebar: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("DFUUtility").font(.title3.bold())
+                    Text("Restore and revive Macs, iPhones and iPads.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 sidebarSectionTitle("Devices")
                 let connected = model.deviceSessions.sessions.filter(\.isConnected)
                 if connected.isEmpty {
                     Label("No connected devices", systemImage: "externaldrive.badge.questionmark").foregroundStyle(.secondary)
                 } else {
                     ForEach(connected) { session in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(session.device.friendlyName ?? session.device.family.displayName).lineLimit(1)
-                            Text([session.device.restoreProductType, session.device.state.rawValue].compactMap { $0 }.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        HStack(spacing: 8) {
+                            Image(systemName: deviceFamilySymbol(session.device.family)).frame(width: 18)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.device.friendlyName ?? session.device.family.displayName).lineLimit(1)
+                                HStack(spacing: 5) {
+                                    Text([session.device.restoreProductType].compactMap { $0 }.joined(separator: " · "))
+                                    DeviceStateBadge(state: session.device.state)
+                                }.font(.caption).lineLimit(1)
+                            }
                         }
                         .padding(.vertical, 3)
                     }
@@ -263,9 +286,15 @@ struct ContentView: View {
         workspaceScroll {
             if let session = model.deviceSessions.sessions.first(where: { $0.id == id }), session.isConnected {
                 VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(session.device.friendlyName ?? session.device.family.displayName).font(.largeTitle.bold())
-                        Text([session.device.family.displayName, session.device.restoreProductType, model.targetWorkflowState.rawValue].compactMap { $0 }.joined(separator: " · ")).foregroundStyle(.secondary)
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(session.device.friendlyName ?? session.device.family.displayName).font(.largeTitle.bold())
+                            Text([session.device.restoreProductType, session.device.family.displayName].compactMap { $0 }.joined(separator: " · ")).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        DeviceStateBadge(state: session.device.state)
+                        Button { Task { await model.refreshDiagnosticsAndTarget() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                            .buttonStyle(.bordered).disabled(model.operationInProgress)
                     }
                     ViewThatFits(in: .horizontal) {
                         HStack(alignment: .top, spacing: 16) {
@@ -277,25 +306,18 @@ struct ContentView: View {
                             firmwareCard(session)
                         }
                     }
-                    GroupBox {
+                    WorkspacePanel("Device Actions", systemImage: "bolt.horizontal") {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Device Actions").font(.headline)
-                            HStack {
-                                if session.device.family == .mac && session.device.state == .normal {
-                                    Button("Enter DFU") { Task { await model.enterDFU() } }.disabled(!model.canEnterDFU)
-                                } else if (session.device.family == .iPhone || session.device.family == .iPad) && (session.device.state == .normal || session.device.state == .recovery) {
-                                    Button("Enter DFU…") { if model.prepareMobileDFUAssistant() { showMobileDFU = true } }.disabled(!model.canUseMobileDFUAssistant)
-                                }
-                                Button("Restore", role: .destructive) { confirmingSingleRestore = true }.disabled(!model.canRestore)
-                                Button("Revive") { model.revive() }.disabled(!model.canRevive)
-                                Button("Restart") { model.restart() }.disabled(!model.canRestart)
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 8) { actionTiles(session) }
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), alignment: .leading)], alignment: .leading, spacing: 8) { actionTiles(session) }
                             }
                             if !model.canRestore { Text(model.restoreUnavailableMessage).font(.caption).foregroundStyle(.secondary) }
                             if !model.canRevive && session.device.state != .normal { Text("Revive is unavailable in the current device state.").font(.caption).foregroundStyle(.secondary) }
                             if !model.canRestart { Text(model.restartUnavailableMessage).font(.caption).foregroundStyle(.secondary) }
                             if model.macDFUInProgress { Text(AppModel.accessoryDFUGuidance).font(.callout) }
                             OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: session.selectedRelease?.version, platform: session.device.family.restorePlatform), target: session.device)
-                        }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 .confirmationDialog("Restore \(session.device.friendlyName ?? session.device.family.displayName)?", isPresented: $confirmingSingleRestore) {
@@ -307,16 +329,39 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder private func actionTiles(_ session: DeviceSession) -> some View {
+        if session.device.family == .mac && session.device.state == .normal {
+            ActionTile(title: "Enter DFU", subtitle: "Put this Mac into DFU mode.", systemImage: "bolt.fill", isDestructive: false, isDisabled: !model.canEnterDFU) { Task { await model.enterDFU() } }
+        } else if (session.device.family == .iPhone || session.device.family == .iPad) && (session.device.state == .normal || session.device.state == .recovery) {
+            ActionTile(title: "Enter DFU…", subtitle: "Open the guided DFU assistant.", systemImage: "bolt.fill", isDestructive: false, isDisabled: !model.canUseMobileDFUAssistant) { if model.prepareMobileDFUAssistant() { showMobileDFU = true } }
+        }
+        ActionTile(title: "Restore", subtitle: "Restore using selected firmware.", systemImage: "arrow.down.circle.fill", isDestructive: true, isDisabled: !model.canRestore) { confirmingSingleRestore = true }
+        ActionTile(title: "Revive", subtitle: "Repair without erasing where supported.", systemImage: "wrench.and.screwdriver.fill", isDestructive: false, isDisabled: !model.canRevive) { model.revive() }
+        ActionTile(title: "Restart", subtitle: "Restart this device.", systemImage: "arrow.clockwise.circle.fill", isDestructive: false, isDisabled: !model.canRestart) { model.restart() }
+    }
+
     private func deviceInformationCard(_ session: DeviceSession) -> some View {
-        GroupBox("Device Information") {
+        WorkspacePanel("Device Information", systemImage: deviceFamilySymbol(session.device.family)) {
             VStack(alignment: .leading, spacing: 8) {
                 LabeledContent("Family", value: session.device.family.displayName)
                 if let product = session.device.restoreProductType { LabeledContent("Product", value: product) }
+                HStack { Text("State"); Spacer(); DeviceStateBadge(state: session.device.state) }
                 if let ecid = session.device.ecid { LabeledContent("ECID", value: ecid) }
                 if let serial = session.device.serialNumber { LabeledContent("Serial number", value: serial) }
                 if let udid = session.device.identifier { LabeledContent("UDID", value: udid) }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                Divider()
+                HStack(spacing: 8) {
+                    if let serial = session.device.serialNumber { Button("Copy Serial") { copyIdentifier(serial) } }
+                    if let ecid = session.device.ecid { Button("Copy ECID") { copyIdentifier(ecid) } }
+                    if let udid = session.device.identifier { Button("Copy UDID") { copyIdentifier(udid) } }
+                }.controlSize(.small)
+            }.frame(maxWidth: .infinity, alignment: .leading)
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func copyIdentifier(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private func firmwareCard(_ session: DeviceSession) -> some View {
@@ -704,13 +749,8 @@ private struct BatchRestoreControls: View {
             Divider()
             Text("Sequential Batch").font(.headline)
             Text("The selected device set and chosen firmware are frozen when a batch starts. Operations run sequentially and each device is explicitly targeted.").font(.caption).foregroundStyle(.secondary)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { firmwareButtons }
-                VStack(alignment: .leading, spacing: 8) { firmwareButtons }
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) { operationButtons }
-            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), alignment: .leading)], alignment: .leading, spacing: 8) { firmwareButtons }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 155), alignment: .leading)], alignment: .leading, spacing: 8) { operationButtons }
             if !coordinator.selectedEligibilityFailures(for: .restore).isEmpty {
                 Text("Every selected device must be ready. \(coordinator.selectedEligibilityFailures(for: .restore).count) selected device(s) are blocked for Restore.").font(.caption).foregroundStyle(.orange)
             }

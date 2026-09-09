@@ -13,10 +13,16 @@ struct DeviceCaptureView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Device Capture").font(.largeTitle.bold())
-            Text("Capture device identifiers without modifying connected devices.").foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Device Capture").font(.largeTitle.bold())
+                    Text("Capture device identifiers without modifying connected devices.").foregroundStyle(.secondary)
+                }
+                Spacer()
+                StatusBadge(title: model.captureSession.isAutomaticCaptureEnabled ? "Automatic capture active" : "Manual capture", tint: model.captureSession.isAutomaticCaptureEnabled ? .green : .secondary, systemImage: model.captureSession.isAutomaticCaptureEnabled ? "dot.radiowaves.left.and.right" : "pause.circle")
+            }
             controls
-            Text("Captured: \(model.captureSession.records.count)").font(.headline)
+            Text("Captured records · \(model.captureSession.records.count)").font(.headline)
             HStack(alignment: .top, spacing: 16) {
                 captureTable
                 if let record = selectedRecord { detailPanel(record) }
@@ -57,19 +63,18 @@ struct DeviceCaptureView: View {
             }
             .disabled(model.target == nil)
             Spacer()
-            Text(model.captureSession.isAutomaticCaptureEnabled ? "Automatic capture active" : "Automatic capture inactive")
-                .font(.caption).foregroundStyle(model.captureSession.isAutomaticCaptureEnabled ? .green : .secondary)
             Button("Export CSV…") { exportCSV() }.disabled(model.captureSession.records.isEmpty)
             Button("Clear Session", role: .destructive) { showingClearConfirmation = true }.disabled(model.captureSession.records.isEmpty)
         }
     }
 
     private var captureTable: some View {
-        GroupBox {
+        let tableHeight = min(CGFloat(520), max(CGFloat(190), CGFloat(model.captureSession.records.count + 1) * 54))
+        return WorkspacePanel("Captured Devices", systemImage: "list.bullet.rectangle") {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     HStack {
-                        Text("Asset Tag").frame(width: 100, alignment: .leading)
+                        Text("Asset").frame(width: 100, alignment: .leading)
                         Text("Device").frame(width: 120, alignment: .leading)
                         Text("Product").frame(width: 110, alignment: .leading)
                         Text("Serial").frame(width: 95, alignment: .leading)
@@ -97,12 +102,12 @@ struct DeviceCaptureView: View {
                             .padding(24)
                     }
                 }
-            }.frame(minHeight: 240)
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }.frame(height: tableHeight)
+        }.frame(maxWidth: .infinity, alignment: .top)
     }
 
     private func detailPanel(_ record: DeviceCaptureRecord) -> some View {
-        GroupBox("Selected Device") {
+        WorkspacePanel("Selected Device", systemImage: deviceFamilySymbol(record.family)) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(record.displayName ?? record.family.displayName).font(.headline)
                 LabeledContent("Family", value: record.family.displayName)
@@ -115,14 +120,19 @@ struct DeviceCaptureView: View {
                         identifierRow("UDID", value: record.udid)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
                 }
-                TextField("Asset tag / label", text: $assetTag)
-                    .onSubmit { model.captureSession.updateAssetTag(assetTag, for: record.id) }
-                Button("Save Asset Tag") { model.captureSession.updateAssetTag(assetTag, for: record.id) }
-                Divider()
-                if let serial = record.serialNumber { Button("Copy Serial") { copy(serial, message: "Serial copied.") } }
-                if let ecid = record.ecid { Button("Copy ECID") { copy(ecid, message: "ECID copied.") } }
-                if let udid = record.udid { Button("Copy UDID") { copy(udid, message: "UDID copied.") } }
-                Button("Copy All Identifiers") { copy(record.copyAllText(), message: "Identifiers copied.") }
+                WorkspacePanel("Asset Tag", systemImage: "tag") {
+                    HStack {
+                        TextField("Optional asset label", text: $assetTag)
+                            .onSubmit { model.captureSession.updateAssetTag(assetTag, for: record.id) }
+                        Button("Save") { model.captureSession.updateAssetTag(assetTag, for: record.id) }
+                    }
+                }
+                WorkspacePanel("Copy Identifiers", systemImage: "doc.on.clipboard") {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) { copyButtons(record) }
+                        VStack(alignment: .leading, spacing: 6) { copyButtons(record) }
+                    }
+                }
                 GroupBox("QR Code") {
                     if let serial = DeviceCaptureQRCode.payload(for: record), let image = makeQR(for: serial) {
                         Image(nsImage: image).interpolation(.none).resizable().scaledToFit().frame(width: 180, height: 180)
@@ -133,7 +143,14 @@ struct DeviceCaptureView: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
             }.frame(minWidth: 230, alignment: .leading).padding(8)
-        }.frame(width: 280)
+        }.frame(width: 300)
+    }
+
+    @ViewBuilder private func copyButtons(_ record: DeviceCaptureRecord) -> some View {
+        if let serial = record.serialNumber { Button("Copy Serial") { copy(serial, message: "Serial copied.") } }
+        if let ecid = record.ecid { Button("Copy ECID") { copy(ecid, message: "ECID copied.") } }
+        if let udid = record.udid { Button("Copy UDID") { copy(udid, message: "UDID copied.") } }
+        Button("Copy All") { copy(record.copyAllText(), message: "Identifiers copied.") }
     }
 
     private func identifierRow(_ label: String, value: String?) -> some View {
