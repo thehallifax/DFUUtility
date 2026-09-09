@@ -41,3 +41,22 @@ or artifact outside the controlled staging area is rejected. No persistent
 privileged updater or sudo-based escalation is used; a non-writable location
 fails with a permission error. Source/Git updating remains isolated and never
 invokes the binary transaction helper.
+
+## Local installer acceptance harness
+
+The packaged helper can be exercised without touching an installed application:
+
+```sh
+scripts/test-binary-installer.sh
+```
+
+The harness packages the current `DFUBinaryInstaller`, creates signed synthetic
+DFUUtility bundles beneath a temporary directory, and invokes the real helper
+as a child process. It covers replacement, post-replacement verification
+rollback, forced rollback failure with preserved recovery evidence, malformed
+or out-of-root transactions, restrictive result permissions, and a no-op
+relaunch marker. Its explicit test-only environment overrides are accepted by
+the helper only when `DFUUTILITY_INSTALLER_TEST_MODE=1`; production launches
+continue to use the normal Application Support root and `/usr/bin/open`.
+The harness never uses `/Applications` as a destination and makes no network,
+Git updater, firmware, or hardware calls.

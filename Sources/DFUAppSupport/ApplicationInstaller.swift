@@ -82,7 +82,7 @@ public struct ApplicationDestinationPolicy: Sendable {
         return destination
     }
     public func bundleIdentifier(at url: URL) -> String? {
-        (Bundle(url: url)?.infoDictionary?["CFBundleIdentifier"] as? String) ?? (NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist"))?["CFBundleIdentifier"] as? String)
+        (NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist"))?["CFBundleIdentifier"] as? String) ?? (Bundle(url: url)?.infoDictionary?["CFBundleIdentifier"] as? String)
     }
 }
 
@@ -93,7 +93,7 @@ public struct ApplicationInstaller {
     public init(fileManager: FileManager = .default, verifier: Verifier? = nil) {
         self.fileManager = fileManager
         self.verifier = verifier ?? { url, version, build in
-            guard let info = Bundle(url: url)?.infoDictionary,
+            guard let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist")),
                   info["CFBundleIdentifier"] as? String == ApplicationDestinationPolicy.bundleIdentifier,
                   info["CFBundleShortVersionString"] as? String == version.description,
                   info["CFBundleVersion"] as? String == build else { return false }
