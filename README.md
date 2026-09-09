@@ -4,7 +4,7 @@ DFUUtility is an open-source native macOS utility for entering supported Macs in
 
 ![DFUUtility multi-device workflow](docs/images/multiple-devices.png)
 
-Version 0.7.0 adds independent multi-device sessions, sequential batch operations, product-specific mobile firmware/cache handling, exact cached-firmware assignment, and improved Mac DFU diagnostics. Community builds are local and ad-hoc signed; no paid Apple Developer account is required.
+Version 0.9.0 is a Community release focused on technician workflows: task-based navigation, independent Firmware Library browsing, Device Capture with QR/CSV export, sequential batch operations, stronger Mac DFU transition verification, and safer updater/host-readiness guidance. Community builds are local and ad-hoc signed; no paid Apple Developer account is required.
 
 ## Features
 
@@ -194,7 +194,7 @@ Apple Configurator's `cfgutil` remains required for device discovery, Restore, a
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.7.0 release notes](docs/RELEASE_NOTES_0.7.0.md) for this release and the [0.6.1 release notes](docs/RELEASE_NOTES_0.6.1.md) for the preceding patch.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.9.0 release notes](docs/RELEASE_NOTES_0.9.0.md) for this release and the [0.7.0 release notes](docs/RELEASE_NOTES_0.7.0.md) for the preceding milestone.
 
 ## License
 
