@@ -154,6 +154,7 @@ public final class UpdateCoordinator: ObservableObject {
     @Published public private(set) var verifiedBinaryArtifact: VerifiedUpdateArtifact?
     public let sourceRecordURL: URL
     public let resultURL: URL
+    public let binaryResultURL: URL
     public let logURL: URL
     public let isSimulation: Bool
     private let service: any UpdateServicing
@@ -167,15 +168,23 @@ public final class UpdateCoordinator: ObservableObject {
     private let binaryVerifier: BinaryArtifactVerifier
     private let binaryStagingURL: URL
     private let runningVersion: SemanticVersion?
+    private let runningBuild: String?
+    private let binaryHandoff: any BinaryInstallHandingOff
+    private let binaryTransactionURL: URL
     private var binaryDownloadTask: Task<Void, Never>?
     private static let lastCheckKey = "DFUUtilityLastSuccessfulUpdateCheck"
 
-    public init(service: any UpdateServicing, sourceRecordURL: URL, resultURL: URL, logURL: URL, defaults: UserDefaults = .standard, appURL: URL = Bundle.main.bundleURL, pid: Int32 = ProcessInfo.processInfo.processIdentifier, isSimulation: Bool = false, now: @escaping @Sendable () -> Date = Date.init, binaryClient: GitHubReleaseClient = GitHubReleaseClient(), binaryDownloader: BinaryUpdateDownloader = BinaryUpdateDownloader(), binaryVerifier: BinaryArtifactVerifier = BinaryArtifactVerifier(), binaryStagingURL: URL? = nil, runningVersion: SemanticVersion? = nil) {
+    public init(service: any UpdateServicing, sourceRecordURL: URL, resultURL: URL, logURL: URL, defaults: UserDefaults = .standard, appURL: URL = Bundle.main.bundleURL, pid: Int32 = ProcessInfo.processInfo.processIdentifier, isSimulation: Bool = false, now: @escaping @Sendable () -> Date = Date.init, binaryClient: GitHubReleaseClient = GitHubReleaseClient(), binaryDownloader: BinaryUpdateDownloader = BinaryUpdateDownloader(), binaryVerifier: BinaryArtifactVerifier = BinaryArtifactVerifier(), binaryStagingURL: URL? = nil, runningVersion: SemanticVersion? = nil, binaryHandoff: (any BinaryInstallHandingOff)? = nil, binaryTransactionURL: URL? = nil, binaryResultURL: URL? = nil) {
         self.service = service; self.sourceRecordURL = sourceRecordURL; self.resultURL = resultURL; self.logURL = logURL
         self.defaults = defaults; self.appURL = appURL; self.pid = pid; self.isSimulation = isSimulation; self.now = now
         self.binaryClient = binaryClient; self.binaryValidator = ReleaseMetadataValidator(); self.binaryDownloader = binaryDownloader; self.binaryVerifier = binaryVerifier
         self.binaryStagingURL = binaryStagingURL ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/DFUUtility/Updates", isDirectory: true)
         self.runningVersion = runningVersion ?? Bundle(url: appURL)?.infoDictionary.flatMap { SemanticVersion(string: $0["CFBundleShortVersionString"] as? String) } ?? Bundle.main.infoDictionary.flatMap { SemanticVersion(string: $0["CFBundleShortVersionString"] as? String) }
+        self.runningBuild = Bundle(url: appURL)?.infoDictionary?["CFBundleVersion"] as? String ?? Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        let support = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/DFUUtility", isDirectory: true)
+        self.binaryTransactionURL = binaryTransactionURL ?? support.appendingPathComponent("binary-update-transaction.json")
+        self.binaryResultURL = binaryResultURL ?? support.appendingPathComponent("binary-update-result")
+        self.binaryHandoff = binaryHandoff ?? ExternalBinaryInstallHandoff(installerURL: Bundle(url: appURL)?.url(forResource: "DFUBinaryInstaller", withExtension: nil) ?? appURL.appendingPathComponent("Contents/Resources/DFUBinaryInstaller"))
     }
 
     public convenience init() {
@@ -299,6 +308,18 @@ public final class UpdateCoordinator: ObservableObject {
         if case .downloading = state { state = .failed("Update download cancelled.") }
     }
 
+    public func installVerifiedBinaryUpdate(operationAllowed: Bool) throws {
+        guard case .verifiedReady(let artifact) = state else { throw ApplicationInstallError.missingArtifact }
+        let destination = try ApplicationDestinationPolicy().resolve(currentAppURL: appURL)
+        _ = try ApplicationInstaller().preflight(artifact: artifact, destination: destination, stagingRoot: binaryStagingURL, operationAllowed: operationAllowed)
+        let backup = destination.deletingLastPathComponent().appendingPathComponent(".DFUUtility-backup-(UUID().uuidString)", isDirectory: true)
+        let transaction = BinaryInstallTransaction(expectedVersion: artifact.version, expectedBuild: artifact.build, artifactURL: artifact.appURL, destinationURL: destination, backupURL: backup, resultURL: binaryResultURL)
+        try BinaryInstallTransactionStore(url: binaryTransactionURL).write(transaction)
+        state = .preparing
+        do { try binaryHandoff.launch(transactionURL: binaryTransactionURL) }
+        catch { state = .verifiedReady(artifact); throw error }
+    }
+
     public func launchUpdate() throws {
         let source = try recordedSource(), previousState = state
         state = .preparing
@@ -320,6 +341,20 @@ public final class UpdateCoordinator: ObservableObject {
     }
 
     public func consumeResult() {
+        if let data = try? String(contentsOf: binaryResultURL, encoding: .utf8) {
+            let values = Dictionary(uniqueKeysWithValues: data.split(whereSeparator: \.isNewline).compactMap { line -> (String, String)? in
+                guard let index = line.firstIndex(of: "=") else { return nil }; return (String(line[..<index]), String(line[line.index(after: index)...]))
+            })
+            let launchVerified = values["status"] == "success" && values["version"] == runningVersion?.description && values["build"] == runningBuild
+            if launchVerified {
+                pendingResult = .init(outcome: .success, oldVersion: runningVersion?.description, newVersion: values["version"])
+            } else {
+                pendingResult = .init(outcome: .failure, oldVersion: runningVersion?.description, newVersion: values["version"])
+            }
+            try? FileManager.default.removeItem(at: binaryResultURL)
+            try? FileManager.default.removeItem(at: binaryTransactionURL)
+            return
+        }
         guard let data = try? String(contentsOf: resultURL, encoding: .utf8) else { return }
         let values = Dictionary(uniqueKeysWithValues: data.split(whereSeparator: \.isNewline).compactMap { line -> (String, String)? in
             guard let index = line.firstIndex(of: "=") else { return nil }; return (String(line[..<index]), String(line[line.index(after: index)...]))

@@ -100,7 +100,7 @@ else
 fi
 
 app="$root/.build/app/DFUUtility.app"
-components="Contents/MacOS/DFUUtility Contents/Library/LaunchServices/DFUPrivilegedHelper Contents/Library/LaunchDaemons/org.dfuutility.privileged-helper.plist Contents/Resources/AppIcon.icns Contents/Resources/DFUUtility-LICENSE.txt Contents/Resources/macvdmtool Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt"
+components="Contents/MacOS/DFUUtility Contents/Library/LaunchServices/DFUPrivilegedHelper Contents/Library/LaunchDaemons/org.dfuutility.privileged-helper.plist Contents/Resources/DFUBinaryInstaller Contents/Resources/AppIcon.icns Contents/Resources/DFUUtility-LICENSE.txt Contents/Resources/macvdmtool Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt"
 missing=""
 for component in $components; do [ -e "$app/$component" ] || missing="$missing $component"; done
 if [ -z "$missing" ]; then pass "Bundle structure"; else fail "Bundle structure" "missing:$missing"; fi

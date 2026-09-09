@@ -11,6 +11,7 @@ let package = Package(
         .executable(name: "DFUUtility", targets: ["DFUUtilityApp"]),
         .executable(name: "macvdmtool", targets: ["macvdmtool"]),
         .executable(name: "DFUPrivilegedHelper", targets: ["DFUPrivilegedHelper"]),
+        .executable(name: "DFUBinaryInstaller", targets: ["DFUBinaryInstaller"]),
     ],
     targets: [
         .target(name: "DFUCore", linkerSettings: [.linkedFramework("Security"), .linkedFramework("ServiceManagement")]),
@@ -18,6 +19,7 @@ let package = Package(
         .executableTarget(name: "dfuctl", dependencies: ["DFUCore"]),
         .executableTarget(name: "DFUUtilityApp", dependencies: ["DFUCore", "DFUAppSupport"]),
         .executableTarget(name: "DFUPrivilegedHelper", dependencies: ["DFUCore"]),
+        .executableTarget(name: "DFUBinaryInstaller", dependencies: ["DFUAppSupport"]),
         .executableTarget(
             name: "macvdmtool",
             path: "Vendor/macvdmtool",

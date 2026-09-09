@@ -155,15 +155,21 @@ private struct SilentMobileLogger: OperationLogging {
 @Test @MainActor func pollingRunsOnlyWhileAssistantIsActive() async throws {
     let discovery = CountingMobileDiscovery([phoneNormal]), model = assistant(discovery: discovery)
     try await Task.sleep(for: .milliseconds(25)); #expect(discovery.callCount == 0)
-    model.activate(); try await Task.sleep(for: .milliseconds(45)); #expect(discovery.callCount > 0); #expect(model.isMonitoring)
-    model.cancel(); let stoppedAt = discovery.callCount
-    try await Task.sleep(for: .milliseconds(40)); #expect(discovery.callCount == stoppedAt); #expect(!model.isMonitoring)
+    model.activate()
+    for _ in 0..<1_000 where discovery.callCount == 0 { await Task.yield() }
+    #expect(model.isMonitoring)
+    model.cancel(); await model.waitForMonitoringStop(); let stoppedAt = discovery.callCount
+    #expect(discovery.callCount == stoppedAt); #expect(!model.isMonitoring)
 }
 
 @Test @MainActor func livePollingStopsOnSameECIDDFU() async throws {
     let discovery = CountingMobileDiscovery([phoneNormal]), model = assistant(discovery: discovery)
-    model.activate(); model.start(); try await Task.sleep(for: .milliseconds(25)); discovery.set([phoneDFU]); try await Task.sleep(for: .milliseconds(45))
+    model.activate(); model.start()
+    for _ in 0..<1_000 where discovery.callCount == 0 { await Task.yield() }
+    discovery.set([phoneDFU])
+    for _ in 0..<1_000 where model.state != .detectedDFU { await Task.yield() }
     #expect(model.state == .detectedDFU); #expect(!model.isMonitoring)
+    await model.waitForMonitoringStop()
 }
 
 @Test @MainActor func demoModeNeverPollsHardware() async throws {

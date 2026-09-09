@@ -39,12 +39,14 @@ echo "Packaging mode: $signing_mode"
 swift build -c "$configuration" --product DFUUtility
 swift build -c "$configuration" --product macvdmtool
 swift build -c "$configuration" --product DFUPrivilegedHelper
+swift build -c "$configuration" --product DFUBinaryInstaller
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ThirdPartyLicenses" "$app/Contents/Library/LaunchServices" "$app/Contents/Library/LaunchDaemons"
 install -m 755 ".build/$configuration/DFUUtility" "$app/Contents/MacOS/DFUUtility"
 install -m 755 ".build/$configuration/macvdmtool" "$app/Contents/Resources/macvdmtool"
 install -m 755 ".build/$configuration/DFUPrivilegedHelper" "$app/Contents/Library/LaunchServices/DFUPrivilegedHelper"
+install -m 755 ".build/$configuration/DFUBinaryInstaller" "$app/Contents/Resources/DFUBinaryInstaller"
 install -m 644 Packaging/org.dfuutility.privileged-helper.plist "$app/Contents/Library/LaunchDaemons/org.dfuutility.privileged-helper.plist"
 install -m 644 Packaging/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 install -m 644 LICENSE "$app/Contents/Resources/DFUUtility-LICENSE.txt"
@@ -70,12 +72,14 @@ plutil -insert DFUUtilityMacVDMToolRevision -string "$MACVDMTOOL_REVISION" "$app
 if [ "$signing_mode" != development-ad-hoc ]; then
   common="--force --timestamp --options runtime --sign"
   codesign $common "$signer" --identifier org.dfuutility.macvdmtool "$app/Contents/Resources/macvdmtool"
+  codesign $common "$signer" --identifier org.dfuutility.binary-installer "$app/Contents/Resources/DFUBinaryInstaller"
   codesign $common "$signer" --entitlements Signing/DFUPrivilegedHelper.entitlements --identifier org.dfuutility.privileged-helper "$app/Contents/Library/LaunchServices/DFUPrivilegedHelper"
   codesign $common "$signer" --entitlements Signing/DFUUtility.entitlements --identifier org.dfuutility.app "$app"
   packaged_team=$(codesign -dvv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)
   [ -n "$packaged_team" ] && [ "$packaged_team" != "not set" ] || { echo "The selected identity did not produce a Team ID; privileged helper registration would fail." >&2; exit 1; }
 else
   codesign --force --sign - --identifier org.dfuutility.macvdmtool "$app/Contents/Resources/macvdmtool"
+  codesign --force --sign - --identifier org.dfuutility.binary-installer "$app/Contents/Resources/DFUBinaryInstaller"
   codesign --force --sign - --entitlements Signing/DFUPrivilegedHelper.entitlements --identifier org.dfuutility.privileged-helper "$app/Contents/Library/LaunchServices/DFUPrivilegedHelper"
   codesign --force --sign - --entitlements Signing/DFUUtility.entitlements --identifier org.dfuutility.app "$app"
 fi

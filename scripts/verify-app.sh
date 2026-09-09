@@ -6,10 +6,11 @@ app=$1
 [ -d "$app" ] || { echo "App not found: $app" >&2; exit 1; }
 helper="$app/Contents/Library/LaunchServices/DFUPrivilegedHelper"
 vdm="$app/Contents/Resources/macvdmtool"
-[ -x "$helper" ] && [ -x "$vdm" ] || { echo "Required nested executable is missing" >&2; exit 1; }
+installer="$app/Contents/Resources/DFUBinaryInstaller"
+[ -x "$helper" ] && [ -x "$vdm" ] && [ -x "$installer" ] || { echo "Required nested executable is missing" >&2; exit 1; }
 
 signature_field() { codesign -dvv "$1" 2>&1 | sed -n "s/^$2=//p" | head -1; }
-for code in "$vdm" "$helper" "$app"; do codesign --verify --strict --verbose=2 "$code"; done
+for code in "$vdm" "$helper" "$installer" "$app"; do codesign --verify --strict --verbose=2 "$code"; done
 codesign --verify --deep --strict --verbose=2 "$app"
 app_team=$(signature_field "$app" TeamIdentifier)
 helper_team=$(signature_field "$helper" TeamIdentifier)
@@ -24,7 +25,7 @@ echo "App entitlements:"; codesign -d --entitlements :- "$app" 2>/dev/null || tr
 echo "Helper entitlements:"; codesign -d --entitlements :- "$helper" 2>/dev/null || true
 
 if [ -n "$app_team" ] && [ "$app_team" != "not set" ]; then
-  for code in "$vdm" "$helper" "$app"; do codesign -dvv "$code" 2>&1 | grep -q 'flags=.*runtime' || { echo "Hardened runtime missing: $code" >&2; exit 1; }; done
+  for code in "$vdm" "$helper" "$installer" "$app"; do codesign -dvv "$code" 2>&1 | grep -q 'flags=.*runtime' || { echo "Hardened runtime missing: $code" >&2; exit 1; }; done
   if codesign -d --entitlements :- "$app" 2>/dev/null | grep -q 'com.apple.security.get-task-allow'; then echo "Production app contains get-task-allow" >&2; exit 1; fi
   if xcrun stapler validate "$app" >/dev/null 2>&1; then
     spctl --assess --type execute --verbose=2 "$app"

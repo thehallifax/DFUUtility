@@ -322,7 +322,15 @@ public final class MobileDFUAssistantModel: ObservableObject {
         }
     }
     private func finishTasks() { releaseTask?.cancel(); releaseTask = nil; timeoutTask?.cancel(); timeoutTask = nil }
-    private func stopMonitoring() { monitorTask?.cancel(); monitorTask = nil; finishTasks(); isMonitoring = false }
+    private func stopMonitoring() { monitorTask?.cancel(); finishTasks(); isMonitoring = false }
+
+    /// Waits for an in-flight read-only discovery call to finish after
+    /// cancellation. This is also useful to callers that must not observe a
+    /// late callback after teardown.
+    public func waitForMonitoringStop() async {
+        if let task = monitorTask { await task.value }
+        monitorTask = nil
+    }
     private func transition(to value: MobileDFUAssistantState) { guard state != value else { return }; state = value; log("State: \(value.description)") }
     private func elapsed() -> Duration { guard let startTick else { return .zero }; return .nanoseconds(Int64(clamping: now() &- startTick)) }
     private func logTiming(_ label: String, _ value: Duration?) { if let value { log("Timing: \(label) at +\(Self.seconds(value)) s") } }

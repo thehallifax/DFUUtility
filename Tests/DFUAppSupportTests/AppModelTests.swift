@@ -82,6 +82,73 @@ private struct DelayedDownloadService: IPSWService {
         }
     }
 }
+private final class GatedDownloadService: @unchecked Sendable, IPSWService {
+    let release: IPSWRelease
+    private let lock = NSLock()
+    private var progressPermissionWaiter: CheckedContinuation<Void, Never>?
+    private var progressAllowed = false
+    private var validationWaiter: CheckedContinuation<Void, Never>?
+    private var validationAllowed = false
+
+    init(release: IPSWRelease) { self.release = release }
+    func availableImages(for device: DFUDevice?) async throws -> [IPSWRelease] { [release] }
+    func recommendedImage(for device: DFUDevice?) async throws -> IPSWRelease { release }
+    func download(_ release: IPSWRelease, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws -> URL { testURL }
+    func downloadEvents(_ release: IPSWRelease) -> AsyncThrowingStream<DownloadEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                continuation.yield(.started(release: release))
+                await waitForProgressPermission()
+                continuation.yield(.progress(completed: 50, total: 100, bytesPerSecond: 20))
+                await Task.yield()
+                await Task.yield()
+                await waitForValidationPermission()
+                continuation.yield(.validating)
+                continuation.yield(.completed(url: testURL))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+    func allowProgress() {
+        let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            progressAllowed = true
+            let value = progressPermissionWaiter
+            progressPermissionWaiter = nil
+            return value
+        }
+        waiter?.resume()
+    }
+    func allowValidation() {
+        let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            validationAllowed = true
+            let value = validationWaiter
+            validationWaiter = nil
+            return value
+        }
+        waiter?.resume()
+    }
+    private func waitForProgressPermission() async {
+        await withCheckedContinuation { continuation in
+            let allowed = lock.withLock {
+                if progressAllowed { return true }
+                progressPermissionWaiter = continuation
+                return false
+            }
+            if allowed { continuation.resume() }
+        }
+    }
+    private func waitForValidationPermission() async {
+        await withCheckedContinuation { continuation in
+            let allowed = lock.withLock {
+                if validationAllowed { return true }
+                validationWaiter = continuation
+                return false
+            }
+            if allowed { continuation.resume() }
+        }
+    }
+}
 private struct AppMockDiscovery: DeviceDiscovering { let values: [DFUDevice]; func devices() throws -> [DFUDevice] { values } }
 private struct AppMockValidator: IPSWValidating { let valid: Bool; func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { if !valid { throw DFUError.invalidIPSW("mock invalid") } } }
 private struct AppMockDiagnostics: DiagnosticsProviding {
@@ -663,10 +730,11 @@ private let noOpLogger = AppMockLogger()
 }
 
 @Test @MainActor func liveDownloadProgressIsVisibleBeforeValidation() async throws {
-    let release = makeRelease(), app = AppModel(ipswService: DelayedDownloadService(release: release), discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
-    await app.load(); app.beginDownload(); try await Task.sleep(for: .milliseconds(40))
+    let release = makeRelease(), service = GatedDownloadService(release: release), app = AppModel(ipswService: service, discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.load(); app.beginDownload(); service.allowProgress()
+    for _ in 0..<1_000 where app.downloadPresentation?.fraction != 0.5 { await Task.yield() }
     #expect(app.downloadPresentation?.fraction == 0.5); #expect(app.downloadPresentation?.bytesPerSecond == 20)
-    try await Task.sleep(for: .milliseconds(320)); #expect(app.imageState == .ready(testURL))
+    service.allowValidation(); await app.waitForDownloadTask(); #expect(app.imageState == .ready(testURL))
 }
 
 @Test @MainActor func windowConfigurationHasStableSensibleDefaultAndMinimum() {
@@ -828,7 +896,8 @@ private let noOpLogger = AppMockLogger()
     let app = AppModel(ipswService: DelayedDownloadService(release: value), discovery: AppMockDiscovery(values: []), cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
     await app.load(); await app.refreshManagedCache(); let entry = try #require(app.managedCacheEntries.first)
     #expect(app.cacheRevealURL(for: entry) == entry.url); #expect(app.managedCacheDirectoryURL == cache.directory)
-    app.beginDownload(); try await Task.sleep(for: .milliseconds(30))
+    app.beginDownload()
+    for _ in 0..<1_000 where app.downloadState == .idle { await Task.yield() }
     #expect(app.cacheRemovalDisabledReason(for: entry)?.contains("downloading") == true)
     app.cancelDownload()
 }
@@ -893,7 +962,7 @@ private let noOpLogger = AppMockLogger()
     let release = makeRelease(), service = TrackingIPSWService(releases: [release], events: [.started(release: release), .progress(completed: 40, total: 100, bytesPerSecond: 12), .validating, .completed(url: testURL)])
     let app = AppModel(ipswService: service, discovery: AppMockDiscovery(values: []), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
     await app.load(); #expect(service.eventRequests == 0)
-    app.beginDownload(); try await Task.sleep(for: .milliseconds(50))
+    app.beginDownload(); await app.waitForDownloadTask()
     #expect(service.eventRequests == 1); #expect(app.imageState == .ready(testURL)); #expect(app.downloadState == .idle)
 }
 
@@ -931,7 +1000,9 @@ private let noOpLogger = AppMockLogger()
 @Test @MainActor func activeDownloadTaskCancelsCleanly() async throws {
     let cache = tempCache()
     let app = AppModel(ipswService: DemoIPSWService(), discovery: AppMockDiscovery(values: []), cache: cache, validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: AppMockDFU(), operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false, isDemoMode: true)
-    await app.load(); app.beginDownload(); try await Task.sleep(for: .milliseconds(180)); app.cancelDownload(); try await Task.sleep(for: .milliseconds(180))
+    await app.load(); app.beginDownload()
+    for _ in 0..<1_000 where app.downloadState == .idle { await Task.yield() }
+    app.cancelDownload(); await app.waitForDownloadTask()
     #expect(app.downloadState == .cancelled); #expect(app.imageURL == nil)
     #expect(!FileManager.default.fileExists(atPath: cache.directory.path))
 }

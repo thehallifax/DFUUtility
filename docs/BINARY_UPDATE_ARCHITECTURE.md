@@ -1,6 +1,6 @@
 # Binary update foundation
 
-DFUUtility 0.10 introduces a non-destructive foundation for checking and verifying future GitHub Release updates. It stops at **Verified update artifact ready**. It does not replace the installed application, terminate the app, or relaunch it.
+DFUUtility 0.10 introduces a staged GitHub Release updater and a transactional application installer. Artifact verification is always completed before installation; installation is explicit and recoverable.
 
 The release source is fixed to `thehallifax/DFUUtility` over GitHub's HTTPS API. The foundation accepts only published stable releases with strict `vMAJOR.MINOR.PATCH` tags, a newer semantic version, the exact `DFUUtility-<version>.zip` asset, a GitHub release-download URL, a sane size, and a `sha256:<64-hex>` digest.
 
@@ -23,5 +23,21 @@ downloading. The user must explicitly choose **Download Update**. Downloaded
 assets are staged under `~/Library/Application Support/DFUUtility/Updates`,
 then checked for size, SHA-256, safe ZIP structure, bundle identity/version,
 required resources, and structural code-signature validity. Successful work
-ends at **Verified update ready to install**. This milestone never replaces,
-terminates, or relaunches the installed application.
+ends at **Verified update ready to install**. Installation is a separate,
+explicit transaction: the running app writes a restrictive descriptor and
+hands it to the bundled one-shot `DFUBinaryInstaller`, then quits. The helper
+validates the descriptor, preserves the current bundle as a same-volume
+backup, moves the verified staged bundle into the validated destination,
+verifies it in place, and rolls back on replacement or verification failure.
+The backup is removed only after successful in-place verification. The helper
+writes a restrictive result record and launches the actual destination bundle;
+the next DFUUtility launch consumes that record and reports success only when
+the running version matches the expected transaction.
+
+The destination is the currently running `org.dfuutility.app` bundle, whether
+that is `/Applications/DFUUtility.app` or another existing writable location.
+An unrelated bundle, missing destination, ambiguous path, non-writable parent,
+or artifact outside the controlled staging area is rejected. No persistent
+privileged updater or sudo-based escalation is used; a non-writable location
+fails with a permission error. Source/Git updating remains isolated and never
+invokes the binary transaction helper.

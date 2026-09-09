@@ -30,6 +30,11 @@ struct UpdateView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(!model.canDownloadBinaryUpdate)
                 }
+                if case .verifiedReady = model.updateCoordinator.state {
+                    Button("Install Update") { _ = model.installVerifiedBinaryUpdate() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!model.canStartUpdate)
+                }
             }
         }
         .padding(24).frame(minWidth: 360, idealWidth: 460, maxWidth: 560)
@@ -69,7 +74,8 @@ struct UpdateView: View {
             Text("Download the verified Community release into DFUUtility's controlled staging area. Installation is not performed in this version.").font(.caption).foregroundStyle(.secondary)
         case .verifiedReady(let artifact):
             Label { Text(verbatim: "DFUUtility \(artifact.version.description) is verified and ready to install.") } icon: { Image(systemName: "checkmark.seal") }
-            Text("Community release verified against published release metadata and bundle structure. Installation will be added in a future update.").font(.caption).foregroundStyle(.secondary)
+            Text("Community release verified against published release metadata and bundle structure.").font(.caption).foregroundStyle(.secondary)
+            Text("Install Update will quit DFUUtility, replace the current application transactionally, and relaunch the installed copy.").font(.caption).foregroundStyle(.secondary)
         case .blockedByOperation(let message):
             Label(message, systemImage: "hourglass").foregroundStyle(.orange)
         case .unavailable(let message), .failed(let message):

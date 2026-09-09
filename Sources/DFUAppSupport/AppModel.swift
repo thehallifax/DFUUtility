@@ -364,6 +364,17 @@ public final class AppModel: ObservableObject {
         updateCoordinator.startBinaryDownload()
     }
     public func cancelBinaryDownload() { updateCoordinator.cancelBinaryDownload() }
+    public func installVerifiedBinaryUpdate() -> Bool {
+        guard canStartUpdate else { presentedError = updateBlockedMessage; return false }
+        do {
+            try updateCoordinator.installVerifiedBinaryUpdate(operationAllowed: canStartUpdate)
+            applicationTerminator.requestTermination()
+            return true
+        } catch {
+            presentedError = error.localizedDescription
+            return false
+        }
+    }
     public var updateBlockedMessage: String { "Finish the current DFUUtility operation before updating." }
     private var updateLaunchInProgress: Bool { if case .preparing = updateCoordinator.state { true } else { false } }
     public var reconnectInProgress: Bool { if case .reconnecting = restoreState { true } else { false } }
@@ -876,6 +887,13 @@ public final class AppModel: ObservableObject {
         guard !updateLaunchInProgress else { presentedError = "DFUUtility is preparing to update."; return }
         guard downloadTask == nil else { return }
         downloadTask = Task { [weak self] in await self?.downloadSelected(); self?.downloadTask = nil }
+    }
+
+    /// Waits for an active download task to unwind. Callers that need to
+    /// inspect a terminal state should await this instead of racing a fixed
+    /// delay against the event stream.
+    public func waitForDownloadTask() async {
+        if let task = downloadTask { await task.value }
     }
 
     public func downloadSelected() async {

@@ -70,7 +70,7 @@ struct ContentView: View {
                 if result.isSimulation { Text("The in-app update workflow completed successfully in simulation.") }
                 else if result.outcome == .failure { Text("DFUUtility could not be updated. The previously installed application remains available.") }
                 else if let old = result.oldVersion, let new = result.newVersion, old != new { Text("Updated successfully to \(new).") }
-                else { Text("DFUUtility was updated successfully. Version remains \(result.newVersion ?? result.oldVersion ?? "unchanged").") }
+                else { Text("DFUUtility was updated to \(result.newVersion ?? "the verified release").") }
             }
         }
         .onChange(of: model.deviceSessions.sessions) { _, sessions in
