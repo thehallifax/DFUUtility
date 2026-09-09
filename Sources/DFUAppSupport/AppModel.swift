@@ -173,6 +173,15 @@ extension DFUController: DFUOperating {}
 
 @MainActor
 public final class AppModel: ObservableObject {
+    public static let accessoryDFUGuidance = "If macOS asks to allow the target Mac to connect, choose Allow so DFUUtility can continue detecting the transition."
+    public var macDFUInProgress: Bool {
+        if case .running(let operation, _, _, _, _) = restoreState { return operation == "Enter DFU" }
+        return false
+    }
+    // Internal timing seams keep hardware-free tests fast. Production uses a
+    // monotonic 30-second deadline, including discovery time, with 1-second gaps.
+    var dfuVerificationDuration: Duration = .seconds(30)
+    var dfuVerificationInterval: Duration = .seconds(1)
     @Published public private(set) var catalogueState: CatalogueState = .idle
     @Published public private(set) var availableReleases: [IPSWRelease] = []
     @Published public var selectedRelease: IPSWRelease?
@@ -436,6 +445,7 @@ public final class AppModel: ObservableObject {
     /// intentionally silent and retain the last valid session snapshot.
     public func pollDeviceDiscovery() async {
         guard !isDemoMode, !isUpdateTestMode, !isScreenshotPresentation else { return }
+        guard !macDFUInProgress else { return }
         benchDiscoveryPollCount &+= 1
         var protectedIDs = Set(deviceSessions.sessions.compactMap { session -> DeviceSessionID? in
             switch session.operationState {
@@ -491,6 +501,7 @@ public final class AppModel: ObservableObject {
             targetDevices = [DFUDevice(family: .iPhone, state: .dfu, model: "iPhone 14 Pro", ecid: "DEMO-PHONE-001", productType: "iPhone15,2")]
         case "completed-restore", "completed":
             targetDevices = [DFUDevice(family: .iPhone, state: .normal, model: "iPhone 14 Pro", ecid: "DEMO-PHONE-001", productType: "iPhone15,2")]
+        case "mac-dfu-verification": targetDevices = []
         case "multiple-devices": targetDevices = []; deviceSessions.configureDemo()
         default: targetDevices = []
         }
@@ -502,7 +513,9 @@ public final class AppModel: ObservableObject {
         else if scenario == "restore-progress" || scenario == "progress" || scenario == "completed-restore" || scenario == "completed" { selectedRelease = cachedIOS }
         else { selectedRelease = availableReleases.first ?? macRelease }
         refreshSelectedCacheState(); refreshImageChoices(); catalogueState = .loaded
-        if scenario == "download-progress" {
+        if scenario == "mac-dfu-verification" {
+            restoreState = .running(operation: "Enter DFU", stage: "Checking for DFU…", stageIndex: nil, stageTotal: nil, fraction: nil)
+        } else if scenario == "download-progress" {
             imageState = .partial(1_850_000_000); downloadState = .downloading(completed: 1_850_000_000, total: latestIOS.fileSize, bytesPerSecond: 42_600_000)
         } else if scenario == "restore-progress" || scenario == "progress" {
             restoreState = .running(operation: "Restore", stage: "Installing System", stageIndex: 4, stageTotal: 4, fraction: 0.66)
@@ -558,13 +571,20 @@ public final class AppModel: ObservableObject {
         } catch { presentedError = error.localizedDescription }
     }
 
-    private func reconcileDiscovery(showFailure: Bool, attempts: Int, preservingDeviceStateFor protectedIDs: Set<DeviceSessionID> = []) async {
+    @discardableResult
+    private func reconcileDiscovery(showFailure: Bool, attempts: Int, preservingDeviceStateFor protectedIDs: Set<DeviceSessionID> = [], verifyingDFUECID: String? = nil) async -> [DFUDevice]? {
         discoveryRevision &+= 1
         let revision = discoveryRevision
         do {
             let discovery = discovery
             let discovered = try await Self.discoverTargets(using: discovery, attempts: attempts)
-            guard revision == discoveryRevision else { return }
+            guard revision == discoveryRevision, !Task.isCancelled else { return nil }
+            var protectedIDs = protectedIDs
+            if let verifyingDFUECID,
+               !discovered.contains(where: { $0.state == .dfu && $0.ecid?.caseInsensitiveCompare(verifyingDFUECID) == .orderedSame }),
+               let session = deviceSessions.sessions.first(where: { $0.ecid?.caseInsensitiveCompare(verifyingDFUECID) == .orderedSame }) {
+                protectedIDs.insert(session.id)
+            }
             var effectiveDevices = discovered
             for protectedID in protectedIDs {
                 guard let protected = deviceSessions.sessions.first(where: { $0.id == protectedID }) else { continue }
@@ -582,8 +602,10 @@ public final class AppModel: ObservableObject {
             else if !targetDevices.contains(where: { $0.ecid == selectedTargetECID }) { selectedTargetECID = nil }
             refreshImageChoices()
             await autoAssignCachedFirmware(to: newSessionIDs)
+            return discovered
         } catch {
             if showFailure && revision == discoveryRevision { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
+            return nil
         }
     }
 
@@ -949,20 +971,59 @@ public final class AppModel: ObservableObject {
     public func enterDFU() async {
         guard !hasSyntheticProductionIdentity else { presentedError = "A synthetic test target identity was rejected in production mode."; return }
         guard canEnterDFU else { presentedError = "macvdmtool is not installed or DFU is unavailable."; return }
+        operationGeneration &+= 1
+        discoveryRevision &+= 1
+        let generation = operationGeneration
+        defer {
+            if generation == operationGeneration, Task.isCancelled { cancelMacDFUVerification() }
+        }
+        let originalECID = target?.ecid
+        presentedError = nil
         let log = try? operationLogger.start(operation: "Enter DFU", target: target, release: nil)
         lastLogURL = log
         restoreState = .running(operation: "Enter DFU", stage: "Requesting administrator authorization…", stageIndex: nil, stageTotal: nil, fraction: nil)
         do {
             if let log { try? operationLogger.append("Privilege mode: \(privilegeMode.displayName)\nAuthorization requested via \(privilegeMode == .community ? "macOS system administrator prompt" : "signed helper")", to: log) }
             let controller = dfuController; try await Task.detached { try controller.enterDFU(timeout: 30) }.value
+            guard generation == operationGeneration, !Task.isCancelled else { return }
             if let log { try? operationLogger.append("Transition result: success\nFinal verified state: DFU, same ECID", to: log) }
             restoreState = .idle; await refreshDiagnosticsAndTarget()
         } catch {
+            guard generation == operationGeneration, !Task.isCancelled else { return }
+            if let toolFailure = error as? MacVDMToolFailure, toolFailure.reachedDBMaWithoutFinalReply {
+                if let log { try? operationLogger.append("Unverified transition\n\(toolFailure.diagnosticDescription)\nChecking for same-ECID DFU for up to 30 seconds", to: log) }
+                restoreState = .running(operation: "Enter DFU", stage: "Checking for DFU…", stageIndex: nil, stageTotal: nil, fraction: nil)
+                let deadline = ContinuousClock.now.advanced(by: dfuVerificationDuration)
+                while ContinuousClock.now < deadline, generation == operationGeneration, !Task.isCancelled {
+                    // This is the same reconciliation used by Refresh. The bench
+                    // poller yields while Enter DFU owns transition verification.
+                    let revision = discoveryRevision &+ 1
+                    let observed = await reconcileDiscovery(showFailure: false, attempts: 1, verifyingDFUECID: originalECID)
+                    guard generation == operationGeneration, !Task.isCancelled else { return }
+                    if ContinuousClock.now < deadline, discoveryRevision == revision,
+                       let originalECID, !originalECID.isEmpty,
+                       observed?.contains(where: { $0.state == .dfu && $0.ecid?.caseInsensitiveCompare(originalECID) == .orderedSame }) == true {
+                        restoreState = .completed("Mac entered DFU. The final VDM acknowledgement wasn’t received, but DFUUtility subsequently detected this Mac in DFU mode.")
+                        if let log { try? operationLogger.append("Verified success: same ECID rediscovered in DFU. No DFU command was retried.", to: log) }
+                        return
+                    }
+                    do { try await Task.sleep(for: min(dfuVerificationInterval, ContinuousClock.now.duration(to: deadline))) }
+                    catch { return }
+                }
+                guard generation == operationGeneration, !Task.isCancelled else { return }
+            }
             let failure = DFUFailurePresentation(error: error)
             if let log { try? operationLogger.append("FAILED\n\(failure.diagnosticDetails)\nOperation context cleared", to: log) }
             restoreState = .failed(failure.userMessage)
             presentedError = failure.userMessage + (log == nil ? "" : "\n\nTechnical details were saved to the operation log. Use View Log to review them.")
         }
+    }
+
+    public func cancelMacDFUVerification() {
+        guard macDFUInProgress else { return }
+        operationGeneration &+= 1
+        discoveryRevision &+= 1
+        restoreState = .failed("DFU transition verification was cancelled. Click Refresh to check the target’s state.")
     }
 
     @discardableResult

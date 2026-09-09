@@ -89,7 +89,7 @@ public struct MacVDMToolFailure: LocalizedError, Equatable, Sendable {
     public var recoverySuggestion: String? {
         switch kind {
         case .noCompatibleTargetPath: "Confirm the data cable is connected to the correct DFU port, then try again."
-        case .targetCommunication where reachedDBMaWithoutFinalReply: "The Mac may already be in DFU. Wait briefly, then click Refresh. If it remains absent, reconnect the cable. On newer MacBooks, consult Apple’s model-specific DFU-port guidance and try the alternate appropriate USB-C port."
+        case .targetCommunication where reachedDBMaWithoutFinalReply: "The Mac may already be in DFU. If macOS is asking to allow the accessory to connect, choose Allow. Accessory authorization may delay detection. Wait briefly, then click Refresh. If it remains absent, reconnect the cable. On newer MacBooks, consult Apple’s model-specific DFU-port guidance and try the alternate appropriate USB-C port."
         case .targetCommunication: "Keep the USB-C cable connected, confirm the target Mac is powered on normally, check Apple’s model-specific DFU-port guidance, then try Enter DFU again."
         case .processLaunch: "Rebuild or reinstall DFUUtility, then try again."
         case .unknown: "Use View Log for technical details, then retry only after checking the target and cable."

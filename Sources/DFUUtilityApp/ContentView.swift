@@ -48,7 +48,7 @@ struct ContentView: View {
         .onAppear { model.startBenchDiscovery() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.startBenchDiscovery() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in model.stopBenchDiscovery() }
-        .onDisappear { model.stopBenchDiscovery() }
+        .onDisappear { model.stopBenchDiscovery(); model.cancelMacDFUVerification() }
         .sheet(isPresented: $showVersions, onDismiss: { firmwareChooserSessionID = nil }) {
             VersionPicker(model: model, isPresented: $showVersions, targetSessionID: firmwareChooserSessionID)
         }
@@ -240,7 +240,8 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 6) { firmwareLibraryActions }
                 }
                 if model.showsSessionPresentation { BatchRestoreControls(model: model, sessions: model.deviceSessions, coordinator: model.batchCoordinator) }
-                if model.target != nil {
+                if model.target != nil || model.macDFUInProgress {
+                    if model.macDFUInProgress { Text(AppModel.accessoryDFUGuidance).font(.callout) }
                     OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.detailedSession?.selectedRelease?.version, platform: model.targetRestorePlatform), target: model.target)
                     Text("Restore erases the target device.").font(.caption.bold()).foregroundStyle(.secondary)
                     if model.canRevive { Text("Revive attempts repair without erasing recoverable user data, but is not a backup or guarantee.").font(.caption).foregroundStyle(.secondary) }

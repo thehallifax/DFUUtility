@@ -98,6 +98,8 @@ DFUUtility normally performs a lightweight daily check for newer Community sourc
 
 The installer records the canonical source location in the user's DFUUtility application-support folder; no developer path is embedded in the app. Update progress and failures are recorded in `~/Library/Logs/DFUUtility/update.log`. A failed build or verification leaves the existing installed app available.
 
+If updates report **Source checkout unavailable**, the original clone may have moved, been deleted, or been replaced with an extracted source archive. Follow the Installation instructions above using a persistent Git clone, then reinstall from that clone. View Update Log retains the technical reason. DFUUtility does not repair or overwrite a checkout automatically.
+
 Manual updating remains available as a fallback:
 
 ```sh
@@ -132,6 +134,8 @@ On the physically tested `Mac17,6`, automatic DFU entry required the rightmost U
 ### Dedicated DFU workstations
 
 On an Apple-silicon Mac laptop, macOS may require approval before a newly connected wired accessory can communicate. DFUUtility cannot reliably read or change this policy. For a trusted technician workstation, review **System Settings → Privacy & Security → Accessories → Allow accessories to connect**. **Automatically allow when unlocked** can reduce repeated prompts while retaining protection when the Mac is locked. **Always allow** reduces prompts further but allows new wired accessories without individual approval, so reserve it for a physically controlled dedicated bench rather than a normal personal Mac.
+
+During Mac DFU entry, approve “Allow accessory to connect?” if macOS presents it. If macvdmtool reports a missing final reply after the confirmed unlock/DBMa stage, DFUUtility checks for the same ECID in DFU for up to 30 seconds. This allows time for manual accessory approval and enumeration; it never retries the DFU command. Without positive same-device evidence, the transition remains unverified. Host accessory approval is separate from mobile trust/pairing and model-specific DFU-port selection.
 
 See [Dedicated DFU host setup](docs/DEDICATED_DFU_HOST.md) for cable, model-specific DFU-port, security, MDM, and trust/pairing distinctions.
 

@@ -65,11 +65,12 @@ public protocol UpdateServicing: Sendable {
 }
 
 public enum UpdateServiceError: LocalizedError, Equatable {
-    case sourceNotRecorded, sourceMissing, updaterMissing, malformedResponse, checkFailed(String), launchFailed(String)
+    case sourceNotRecorded, sourceMissing, sourceInvalid(String), updaterMissing, malformedResponse, checkFailed(String), launchFailed(String)
     public var errorDescription: String? {
         switch self {
         case .sourceNotRecorded: "Automatic updates are unavailable because DFUUtility's source folder has not been recorded. Reinstall DFUUtility from GitHub to restore automatic updates."
         case .sourceMissing: "Automatic updates are unavailable because DFUUtility's source folder could not be found. Reinstall DFUUtility from GitHub to restore automatic updates."
+        case .sourceInvalid(let detail): detail
         case .updaterMissing: "The recorded source folder does not contain the DFUUtility updater."
         case .malformedResponse: "The updater returned an unreadable response."
         case .checkFailed(let message): message
@@ -100,6 +101,7 @@ public struct ShellUpdateService: UpdateServicing {
                 return .available(.init(currentVersion: currentVersion, latestVersion: latestVersion, currentCommit: currentCommit, latestCommit: latestCommit))
             }
             if status == "fetch_failed" { throw UpdateServiceError.checkFailed(fields["message"] ?? "Could not contact the DFUUtility Git repository.") }
+            if status == "invalid_source" { throw UpdateServiceError.sourceInvalid(fields["message"] ?? "Invalid source checkout") }
             return .unavailable(fields["message"] ?? "The source updater reported: \(status.replacingOccurrences(of: "_", with: " ")).")
         }.value
     }
@@ -132,6 +134,8 @@ public struct SimulatedUpdateService: UpdateServicing {
 
 @MainActor
 public final class UpdateCoordinator: ObservableObject {
+    public static let sourceGuidance = "DFUUtility was installed without a usable source checkout, or the original checkout has moved. Reinstall DFUUtility from the project repository to enable Community updates."
+    @Published public private(set) var sourceCheckoutUnavailable = false
     @Published public private(set) var state: AppUpdateState = .idle
     @Published public private(set) var launchSucceeded = false
     @Published public private(set) var pendingResult: AppUpdateResult?
@@ -176,13 +180,26 @@ public final class UpdateCoordinator: ObservableObject {
     }
 
     public func check(manual: Bool) async {
+        sourceCheckoutUnavailable = false
         state = .checking
         do {
             let source = try recordedSource()
             state = try await service.check(sourceRoot: source)
             defaults.set(now(), forKey: Self.lastCheckKey)
         } catch {
-            state = manual ? .failed(error.localizedDescription) : .idle
+            switch error {
+            case UpdateServiceError.sourceNotRecorded, UpdateServiceError.sourceMissing, UpdateServiceError.sourceInvalid, UpdateServiceError.updaterMissing:
+                sourceCheckoutUnavailable = true
+            default: break
+            }
+            try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let detail = "Update check failed: \(error.localizedDescription)\n"
+            if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
+            if let handle = try? FileHandle(forWritingTo: logURL) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd(); try? handle.write(contentsOf: Data(detail.utf8))
+            }
+            state = manual ? .failed(sourceCheckoutUnavailable ? Self.sourceGuidance : error.localizedDescription) : .idle
         }
     }
 

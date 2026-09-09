@@ -1,4 +1,4 @@
-import DFUAppSupport
+@testable import DFUAppSupport
 import DFUCore
 import Foundation
 import Testing
@@ -1495,6 +1495,8 @@ private final class ResultSequencedDiscovery: @unchecked Sendable, DeviceDiscove
     let logger = AppMockLogger()
     let target = DFUDevice(state: .normal, model: "MacBookPro21,6", ecid: "0xSYNTHETIC")
     let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [target]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: AppMockRestore(), dfuController: SequencedDFUFailure([transition]), operationLogger: logger, requiresPrivilegedHelperSetup: false)
+    app.dfuVerificationDuration = .milliseconds(30)
+    app.dfuVerificationInterval = .milliseconds(5)
 
     await app.refreshDiagnosticsAndTarget()
     await app.enterDFU()
@@ -1508,6 +1510,53 @@ private final class ResultSequencedDiscovery: @unchecked Sendable, DeviceDiscove
     let log = logger.messages.joined(separator: "\n")
     #expect(log.contains("HPM unlock and DBMa transition completed"))
     #expect(log.contains("DFU state remains unverified until rediscovery"))
+}
+
+@Test @MainActor func missingReplyVerificationRequiresFreshSameECIDDFU() async {
+    let raw = "Looking for HPM devices...\nFound: IOService:/fixture\nUnlocking... OK\nEntering DBMa mode... Status: DBMa\nDid not get a reply to VDM"
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let outcomes: [[DFUDevice]] = [[], [normal], [DFUDevice(state: .recovery, ecid: "0xABC")], [DFUDevice(state: .dfu, ecid: "0xOTHER")], [DFUDevice(state: .dfu, ecid: "0xabc")]]
+    for (index, outcome) in outcomes.enumerated() {
+        let controller = SequencedDFUFailure([MacVDMToolFailure.classify(status: 255, output: raw)])
+        let restore = CountingRestore(), service = TrackingIPSWService(releases: [])
+        let app = AppModel(ipswService: service, discovery: AppSequencedDiscovery([[normal], [], outcome]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: restore, dfuController: controller, operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+        #expect(app.dfuVerificationDuration == .seconds(30))
+        app.dfuVerificationDuration = .milliseconds(100)
+        app.dfuVerificationInterval = .milliseconds(10)
+        await app.refreshDiagnosticsAndTarget()
+        await app.enterDFU()
+        if index == outcomes.count - 1 {
+            guard case .completed(let message) = app.restoreState else { Issue.record("Same ECID DFU should verify"); continue }
+            #expect(message.contains("subsequently detected this Mac")); #expect(app.presentedError == nil)
+        } else {
+            guard case .failed(let message) = app.restoreState else { Issue.record("Unverified outcome must fail"); continue }
+            #expect(message.contains("Accessory authorization may delay detection"))
+        }
+        #expect(controller.callCount == 1); #expect(restore.callCount == 0); #expect(service.eventRequests == 0)
+    }
+}
+
+@Test @MainActor func cancelledDFUVerificationCannotPublishLateSuccess() async {
+    let raw = "Unlocking... OK\nEntering DBMa mode... Status: DBMa\nDid not get a reply to VDM"
+    let normal = DFUDevice(state: .normal, model: "Mac14,2", ecid: "0xABC")
+    let controller = SequencedDFUFailure([MacVDMToolFailure.classify(status: 255, output: raw)])
+    let app = AppModel(ipswService: AppMockService(), discovery: AppSequencedDiscovery([[normal], [], [DFUDevice(state: .dfu, ecid: "0xABC")]]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: CountingRestore(), dfuController: controller, operationLogger: noOpLogger, requiresPrivilegedHelperSetup: false)
+    await app.refreshDiagnosticsAndTarget()
+    let operation = Task { await app.enterDFU() }
+    #expect(await waitForRestoreState(app) { if case .running(_, "Checking for DFU…", _, _, _) = $0 { true } else { false } })
+    #expect(AppModel.accessoryDFUGuidance.contains("If macOS asks"))
+    app.cancelMacDFUVerification()
+    let cancelled = app.restoreState
+    await operation.value
+    #expect(app.restoreState == cancelled); #expect(controller.callCount == 1)
+}
+
+@Test func missingReplyEvidenceDoesNotIncludeGenericOrIncompleteFailures() {
+    for output in ["exit 255", "Did not get a reply to VDM", "Unlocking... OK\nDid not get a reply to VDM", "Entering DBMa mode... Status: DBMa\nDid not get a reply to VDM"] {
+        let failure = MacVDMToolFailure.classify(status: 255, output: output)
+        #expect(!failure.reachedDBMaWithoutFinalReply)
+        #expect(failure.recoverySuggestion?.contains("Accessory authorization") != true)
+    }
 }
 
 @Test func dfuFailurePresentationKeepsAuthorizationToolAndLaunchFailuresDistinct() {

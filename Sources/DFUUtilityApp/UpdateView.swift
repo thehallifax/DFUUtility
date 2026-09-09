@@ -25,7 +25,8 @@ struct UpdateView: View {
     }
 
     private var title: String {
-        switch model.updateCoordinator.state {
+        if model.updateCoordinator.sourceCheckoutUnavailable { return "Source checkout unavailable" }
+        return switch model.updateCoordinator.state {
         case .available: "Update Available"
         case .checking: "Checking for Updates…"
         case .current: "DFUUtility Is Up to Date"
@@ -49,6 +50,9 @@ struct UpdateView: View {
         case .unavailable(let message), .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             Button("View Update Log") { NSWorkspace.shared.open(model.updateCoordinator.logURL) }
+            if model.updateCoordinator.sourceCheckoutUnavailable {
+                Link("Installation instructions", destination: URL(string: "https://github.com/thehallifax/DFUUtility#installation")!)
+            }
         case .idle: Text("Choose Check for Updates from the DFUUtility menu to check the original source clone.")
         }
     }

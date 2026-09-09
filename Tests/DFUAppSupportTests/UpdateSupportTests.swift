@@ -57,13 +57,13 @@ private func updateFixture(_ name: String = UUID().uuidString) throws -> (URL, U
     #expect(coordinator.shareableSourceHealth == "Source not recorded")
     await coordinator.check(manual: true)
     guard case .failed(let missing) = coordinator.state else { Issue.record("Expected missing-record failure"); return }
-    #expect(missing.contains("has not been recorded"))
+    #expect(missing == UpdateCoordinator.sourceGuidance); #expect(coordinator.sourceCheckoutUnavailable)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     try "/deleted/source".write(to: record, atomically: true, encoding: .utf8)
     #expect(coordinator.shareableSourceHealth == "Recorded source unavailable")
     await coordinator.check(manual: true)
     guard case .failed(let deleted) = coordinator.state else { Issue.record("Expected deleted-source failure"); return }
-    #expect(deleted.contains("could not be found")); #expect(box.checks == 0)
+    #expect(deleted == UpdateCoordinator.sourceGuidance); #expect(box.checks == 0)
 }
 
 @MainActor @Test func automaticCheckThrottleAndDisabledModesStayOffline() async throws {
@@ -75,6 +75,36 @@ private func updateFixture(_ name: String = UUID().uuidString) throws -> (URL, U
     await coordinator.automaticCheckIfDue(disabled: false)
     await coordinator.automaticCheckIfDue(disabled: false)
     #expect(box.checks == 1)
+}
+
+@MainActor @Test func invalidSourceGuidanceRetainsTechnicalLogAndOtherSafetyFailures() async throws {
+    let (root, _, record) = try updateFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let box = UpdateServiceBox(), log = root.appendingPathComponent("update.log")
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: box), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: log)
+    box.error = UpdateServiceError.sourceInvalid("this folder is not a Git worktree")
+    await coordinator.check(manual: true)
+    #expect(coordinator.sourceCheckoutUnavailable)
+    #expect(coordinator.state == .failed(UpdateCoordinator.sourceGuidance))
+    #expect(try String(contentsOf: log, encoding: .utf8).contains("not a Git worktree"))
+    box.error = nil; box.result = .unavailable("Source has local changes")
+    await coordinator.check(manual: true)
+    #expect(!coordinator.sourceCheckoutUnavailable); #expect(coordinator.state == box.result)
+    #expect(box.launches == 0)
+}
+
+@Test func shellUpdaterClassifiesInvalidSourceWithoutLaunchingUpdate() async throws {
+    let (root, source, _) = try updateFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let scripts = source.appendingPathComponent("scripts")
+    try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+    let updater = scripts.appendingPathComponent("update.sh")
+    try "#!/bin/sh\nprintf 'status=invalid_source\\nmessage=This folder is not a Git worktree.\\n'\nexit 1\n".write(to: updater, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: updater.path)
+    do {
+        _ = try await ShellUpdateService(launcherURL: root.appendingPathComponent("absent-launcher")).check(sourceRoot: source)
+        Issue.record("Expected invalid source classification")
+    } catch UpdateServiceError.sourceInvalid(let detail) {
+        #expect(detail.contains("not a Git worktree"))
+    }
 }
 
 @MainActor @Test func automaticNetworkFailureIsQuietAndDoesNotThrottleRetry() async throws {
