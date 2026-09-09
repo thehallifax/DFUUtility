@@ -723,6 +723,76 @@ private let noOpLogger = AppMockLogger()
     #expect(validating.downloadPresentationState == .validating); #expect(validating.downloadPresentationState.progress == nil)
 }
 
+@Test @MainActor func deviceCaptureIsReadOnlyStableAndOptIn() {
+    let capture = DeviceCaptureSession()
+    let device = DFUDevice(family: .iPad, state: .recovery, model: "iPad12,1", ecid: "0xABC", serialNumber: "SERIAL-1")
+    capture.observe([device])
+    #expect(capture.records.isEmpty)
+    capture.isAutomaticCaptureEnabled = true
+    capture.observe([device])
+    capture.observe([device])
+    #expect(capture.records.count == 1)
+    #expect(capture.records[0].ecid == "0xABC")
+}
+
+@Test @MainActor func deviceCaptureEnrichesWithoutChangingIdentityOrBatchState() {
+    let capture = DeviceCaptureSession()
+    let first = DFUDevice(family: .mac, state: .normal, model: "Mac14,2", ecid: "ECID-1")
+    let enriched = DFUDevice(family: .mac, state: .dfu, model: "Mac14,2", identifier: "UDID-1", ecid: "ECID-1", serialNumber: "SERIAL-1")
+    let record = capture.capture(first, assetTag: "  BENCH-1 ")
+    capture.capture(enriched)
+    #expect(capture.records.count == 1)
+    #expect(capture.records[0].id == record.id)
+    #expect(capture.records[0].serialNumber == "SERIAL-1")
+    #expect(capture.records[0].state == .dfu)
+    #expect(capture.records[0].assetTag == "BENCH-1")
+}
+
+@Test @MainActor func deviceCaptureSeparatesDifferentAndUnaddressableDevices() {
+    let capture = DeviceCaptureSession()
+    capture.capture(DFUDevice(family: .iPhone, state: .normal, model: "iPhone7,2", ecid: "ECID-A"))
+    capture.capture(DFUDevice(family: .iPhone, state: .normal, model: "iPhone7,2", ecid: "ECID-B"))
+    capture.capture(DFUDevice(family: .iPad, state: .recovery, model: "iPad12,1"))
+    capture.capture(DFUDevice(family: .iPad, state: .recovery, model: "iPad12,1"))
+    #expect(capture.records.count == 4)
+}
+
+@Test @MainActor func deviceCaptureCSVIsOrderedEscapedAndClearsOnlyCaptureRecords() {
+    let capture = DeviceCaptureSession()
+    let record = DeviceCaptureRecord(capturedAt: Date(timeIntervalSince1970: 0), device: DFUDevice(family: .mac, state: .dfu, model: "Mac14,2", ecid: "ECID,1", serialNumber: "SERIAL\"1"), assetTag: "Tag\n1")
+    capture.capture(DFUDevice(family: .mac, state: .dfu, model: "Mac14,2", ecid: "ECID,1", serialNumber: "SERIAL\"1"), assetTag: "Tag\n1")
+    let csv = capture.csvString()
+    #expect(csv.hasPrefix("Captured At,Asset Tag,Family,Display Name,Product Identifier,Serial Number,ECID,UDID,State\r\n"))
+    #expect(csv.contains("\"Tag\n1\"")); #expect(csv.contains("\"SERIAL\"\"1\"")); #expect(csv.contains("\"ECID,1\""))
+    #expect(DeviceCaptureQRCode.payload(for: record) == "SERIAL\"1")
+    let unavailable = DeviceCaptureRecord(device: DFUDevice(family: .mac, state: .dfu, model: "Mac14,2"))
+    #expect(DeviceCaptureQRCode.payload(for: unavailable) == nil)
+    #expect(!unavailable.copyAllText().contains("Serial:")); #expect(!unavailable.copyAllText().contains("ECID:")); #expect(!unavailable.copyAllText().contains("UDID:"))
+    capture.clear(); #expect(capture.records.isEmpty)
+}
+
+@Test @MainActor func deviceCaptureDoesNotChangeBatchSelectionOrStartOperation() {
+    let app = model(service: AppMockService())
+    let device = DFUDevice(family: .iPhone, state: .recovery, model: "iPhone7,2", ecid: "ECID-CAPTURE")
+    app.deviceSessions.reconcile([device])
+    guard let session = app.deviceSessions.sessions.first else { Issue.record("Expected a session") ; return }
+    app.setSessionSelected(session.id, selected: true)
+    app.selectTarget(ecid: "ECID-CAPTURE")
+    #expect(app.captureSession.capture(device).ecid == "ECID-CAPTURE")
+    #expect(app.deviceSessions.sessions.first?.isSelected == true)
+    #expect(app.restoreState == .idle)
+}
+
+@Test func deviceCaptureDetailMakesIdentifierAndQRAvailabilityExplicit() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let content = try String(contentsOf: root.appendingPathComponent("Sources/DFUUtilityApp/DeviceCaptureView.swift"), encoding: .utf8)
+    #expect(content.contains("GroupBox(\"Identifiers\")"))
+    #expect(content.contains("Not available"))
+    #expect(content.contains("GroupBox(\"QR Code\")"))
+    #expect(content.contains("Serial number unavailable for this device."))
+    #expect(content.contains("DeviceCaptureQRCode.payload(for: record)"))
+}
+
 @Test @MainActor func removingSelectedManagedImageInvalidatesMainCardAndRefreshesManager() async throws {
     let value = makeRelease(), cache = tempCache(); try cache.prepare(for: value); try Data("valid".utf8).write(to: cache.partialURL(for: value)); let ready = try cache.commit(partial: cache.partialURL(for: value), release: value)
     let app = model(service: AppMockService(releases: [value]), cache: cache); await app.load(); await app.refreshManagedCache()

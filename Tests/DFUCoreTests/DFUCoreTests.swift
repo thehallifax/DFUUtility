@@ -93,6 +93,15 @@ private final class CapturingValidator: @unchecked Sendable, IPSWValidating {
     #expect(devices[1].restoreProductType == "iPhone15,2"); #expect(devices[1].serialNumber == "SERIAL-REDACTED")
 }
 
+@Test func cfgutilDiscoveryNormalizesIdentifierKeyCasing() throws {
+    let runner = SequenceCommandRunner([
+        result("{\"Devices\":[\"1\"]}"),
+        result("{\"ecid\":\"LOWER-ECID\",\"deviceclass\":\"Mac\",\"devicetype\":\"MacBookAir10,1\",\"bootedState\":\"Booted\",\"udid\":\"LOWER-UDID\",\"serialnumber\":\"LOWER-SERIAL\"}")
+    ])
+    let device = try #require(ConfiguratorDeviceDiscovery(runner: runner, cfgutil: URL(fileURLWithPath: "/cfgutil")).devices().first)
+    #expect(device.ecid == "LOWER-ECID"); #expect(device.identifier == "LOWER-UDID"); #expect(device.serialNumber == "LOWER-SERIAL")
+}
+
 @Test func mobileCacheIsPlatformSeparatedWithoutMovingMacCache() throws {
     let cache = IPSWCache(directory: URL(fileURLWithPath: "/tmp/cache"))
     let mac = release(), phone = IPSWRelease(platform: .iOS, version: "26.6.1", build: "23G83", downloadURL: sampleURL, supportedDevices: ["iPhone15,2"])

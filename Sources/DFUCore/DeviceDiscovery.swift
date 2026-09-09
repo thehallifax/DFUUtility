@@ -89,7 +89,8 @@ public struct ConfiguratorDeviceDiscovery: DeviceDiscovering {
     }
 
     private static func first(_ values: [String: String], keys: [String]) -> String? {
-        keys.lazy.compactMap { values[$0] }.first
+        let wanted = Set(keys.map { $0.lowercased() })
+        return values.first(where: { wanted.contains($0.key.lowercased()) })?.value
     }
 
     private static func state(from values: [String: String]) -> DeviceState {

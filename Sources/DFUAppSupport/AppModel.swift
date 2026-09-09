@@ -207,9 +207,11 @@ public final class AppModel: ObservableObject {
     public let isDemoMode: Bool
     public let isUpdateTestMode: Bool
     public let deviceSessions: DeviceSessionManager
+    public let captureSession: DeviceCaptureSession
     public let batchCoordinator: BatchCoordinator
     public let updateCoordinator: UpdateCoordinator
     public var isScreenshotPresentation: Bool { screenshotScenario != nil }
+    public var screenshotPresentationScenario: String? { screenshotScenario }
     public let privilegeMode: PrivilegeMode
     private let screenshotScenario: String?
     private let ipswService: any IPSWService
@@ -240,6 +242,7 @@ public final class AppModel: ObservableObject {
         let resolvedMode = privilegeMode ?? (requiresPrivilegedHelperSetup ? PrivilegeModeSelector.select() : .community)
         let sessionManager = DeviceSessionManager()
         self.deviceSessions = sessionManager
+        self.captureSession = DeviceCaptureSession()
         self.batchCoordinator = BatchCoordinator(sessions: sessionManager, operatorService: DefaultBatchTargetOperator(restore: restoreEngine, discovery: discovery, reconnectAttempts: reconnectAttempts, reconnectInterval: reconnectInterval), logger: operationLogger)
         self.updateCoordinator = updateCoordinator ?? UpdateCoordinator()
         self.applicationTerminator = applicationTerminator ?? NoOpApplicationTerminator()
@@ -249,6 +252,7 @@ public final class AppModel: ObservableObject {
         self.operationLogger = operationLogger; self.requiresPrivilegedHelperSetup = resolvedMode == .signedHelper; self.privilegeMode = resolvedMode; self.isDemoMode = isDemoMode; self.isUpdateTestMode = isUpdateTestMode; self.screenshotScenario = screenshotScenario; self.targetDiscoveryAttempts = max(1, targetDiscoveryAttempts); self.reconnectAttempts = max(1, reconnectAttempts); self.reconnectInterval = reconnectInterval
         sessionManager.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         batchCoordinator.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
+        captureSession.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         self.updateCoordinator.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
     }
 
@@ -507,7 +511,7 @@ public final class AppModel: ObservableObject {
         case "completed-restore", "completed":
             targetDevices = [DFUDevice(family: .iPhone, state: .normal, model: "iPhone 14 Pro", ecid: "DEMO-PHONE-001", productType: "iPhone15,2")]
         case "mac-dfu-verification": targetDevices = []
-        case "multiple-devices": targetDevices = []; deviceSessions.configureDemo()
+        case "multiple-devices", "device-capture": targetDevices = []; deviceSessions.configureDemo()
         default: targetDevices = []
         }
         managedCacheEntries = DemoFirmwareLibrary.cachedEntries
@@ -528,7 +532,19 @@ public final class AppModel: ObservableObject {
             restoreState = .completed("Restore completed successfully. Target restarted.")
         }
         selectedTargetECID = targetDevices.count == 1 ? targetDevices[0].ecid : nil
-        if scenario != "multiple-devices" { deviceSessions.reconcile(targetDevices) }
+        if scenario != "multiple-devices" && scenario != "device-capture" { deviceSessions.reconcile(targetDevices) }
+        if scenario == "device-capture" {
+            for (index, session) in deviceSessions.sessions.prefix(3).enumerated() {
+                if index == 0 {
+                    var device = session.device
+                    device.serialNumber = "DEMO-SERIAL-MAC-001"
+                    device.identifier = "DEMO-UDID-MAC-001"
+                    captureSession.capture(device)
+                } else {
+                    captureSession.capture(session.device)
+                }
+            }
+        }
     }
 
     public func refreshCatalogue() async {
@@ -602,6 +618,7 @@ public final class AppModel: ObservableObject {
             let existingSessionIDs = Set(deviceSessions.sessions.map(\.id))
             targetDevices = effectiveDevices
             deviceSessions.reconcile(effectiveDevices, preservingDeviceStateFor: protectedIDs)
+            captureSession.observe(discovered)
             let newSessionIDs = Set(deviceSessions.sessions.map(\.id)).subtracting(existingSessionIDs)
             if targetDevices.count == 1 { selectedTargetECID = targetDevices[0].ecid }
             else if !targetDevices.contains(where: { $0.ecid == selectedTargetECID }) { selectedTargetECID = nil }
@@ -662,6 +679,11 @@ public final class AppModel: ObservableObject {
     public func selectSessionForDetail(_ id: DeviceSessionID) {
         guard let session = deviceSessions.sessions.first(where: { $0.id == id }), let ecid = session.ecid else { return }
         selectTarget(ecid: ecid)
+    }
+    @discardableResult
+    public func captureConnectedDevice() -> DeviceCaptureRecord? {
+        guard let target else { return nil }
+        return captureSession.capture(target)
     }
     public func setSessionSelected(_ id: DeviceSessionID, selected: Bool) { deviceSessions.select(id, selected: selected) }
     public func selectAllRestoreEligibleSessions() { deviceSessions.selectAllRestoreEligible() }

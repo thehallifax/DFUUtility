@@ -34,7 +34,9 @@ struct ContentView: View {
         .frame(minWidth: 920, minHeight: 620)
         .task {
             await model.load()
-            if destination == .restoreRevive, model.deviceSessions.sessions.filter(\.isConnected).count == 1,
+            if model.screenshotPresentationScenario == "device-capture" {
+                destination = .deviceCapture
+            } else if destination == .restoreRevive, model.deviceSessions.sessions.filter(\.isConnected).count == 1,
                let session = model.deviceSessions.sessions.first(where: \.isConnected) {
                 model.selectSessionForDetail(session.id)
                 destination = .device(session.id)
@@ -254,14 +256,7 @@ struct ContentView: View {
     }
 
     private var captureWorkspace: some View {
-        workspaceScroll {
-            GroupBox("Device Capture") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label("Read-only technician asset capture is planned for a future release.", systemImage: "doc.text.viewfinder").font(.headline)
-                    Text("This workspace will capture device details for technician records without changing the target. CSV export, QR generation, and persistent capture sessions are not part of this pass.").foregroundStyle(.secondary)
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
-            }
-        }
+        workspaceScroll { DeviceCaptureView(model: model) }
     }
 
     @ViewBuilder private func deviceWorkspace(id: DeviceSessionID) -> some View {
