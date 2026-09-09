@@ -96,6 +96,8 @@ scripts/install-local.sh --test --verbose
 
 DFUUtility normally performs a lightweight daily check for newer Community source after launch. It never installs automatically. Choose **DFUUtility → Check for Updates…** to perform a fresh check; **Update Now** quits the running app, safely fast-forwards its original Git clone, rebuilds and verifies the app locally, installs it, and relaunches it. The original checkout must still exist, remain on `main`, and have no local changes.
 
+For a normal copied/binary installation with no recorded source checkout, the same check uses the published stable GitHub Release metadata. It never downloads automatically. When a newer release is available, choose **Download Update** explicitly; DFUUtility stages the ZIP in its private Application Support update area, verifies its size, SHA-256 digest, archive paths, bundle identity/version/resources, and structural signature, then stops at **Verified update ready to install**. Binary installation is intentionally deferred to a later milestone.
+
 The installer records the canonical source location in the user's DFUUtility application-support folder; no developer path is embedded in the app. Update progress and failures are recorded in `~/Library/Logs/DFUUtility/update.log`. A failed build or verification leaves the existing installed app available.
 
 If updates report **Source checkout unavailable**, the original clone may have moved, been deleted, or been replaced with an extracted source archive. Follow the Installation instructions above using a persistent Git clone, then reinstall from that clone. View Update Log retains the technical reason. DFUUtility does not repair or overwrite a checkout automatically.

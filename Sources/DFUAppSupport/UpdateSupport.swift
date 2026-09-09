@@ -1,4 +1,5 @@
 import Foundation
+import DFUCore
 
 public enum DevelopmentUpdateAcceptance {
     public static func isEnabled(arguments: [String], bundleURL: URL) -> Bool {
@@ -21,6 +22,11 @@ public struct UpdateAvailability: Equatable, Sendable {
 public enum AppUpdateState: Equatable, Sendable {
     case idle, checking, current
     case available(UpdateAvailability)
+    case binaryAvailable(ValidatedBinaryRelease)
+    case downloading
+    case verifying
+    case verifiedReady(VerifiedUpdateArtifact)
+    case blockedByOperation(String)
     case unavailable(String)
     case preparing
     case failed(String)
@@ -53,6 +59,12 @@ public struct AppUpdateResult: Equatable, Sendable {
 public protocol UpdateServicing: Sendable {
     func check(sourceRoot: URL) async throws -> AppUpdateState
     func launch(sourceRoot: URL, oldPID: Int32, appURL: URL, resultURL: URL) throws
+}
+
+public enum InstallationUpdateMode: Equatable, Sendable {
+    case source(URL)
+    case binary
+    case invalidSourceRecord(String)
 }
 
 @MainActor public protocol ApplicationTerminationRequesting: AnyObject {
@@ -139,6 +151,7 @@ public final class UpdateCoordinator: ObservableObject {
     @Published public private(set) var state: AppUpdateState = .idle
     @Published public private(set) var launchSucceeded = false
     @Published public private(set) var pendingResult: AppUpdateResult?
+    @Published public private(set) var verifiedBinaryArtifact: VerifiedUpdateArtifact?
     public let sourceRecordURL: URL
     public let resultURL: URL
     public let logURL: URL
@@ -148,11 +161,21 @@ public final class UpdateCoordinator: ObservableObject {
     private let now: @Sendable () -> Date
     private let appURL: URL
     private let pid: Int32
+    private let binaryClient: GitHubReleaseClient
+    private let binaryValidator: ReleaseMetadataValidator
+    private let binaryDownloader: BinaryUpdateDownloader
+    private let binaryVerifier: BinaryArtifactVerifier
+    private let binaryStagingURL: URL
+    private let runningVersion: SemanticVersion?
+    private var binaryDownloadTask: Task<Void, Never>?
     private static let lastCheckKey = "DFUUtilityLastSuccessfulUpdateCheck"
 
-    public init(service: any UpdateServicing, sourceRecordURL: URL, resultURL: URL, logURL: URL, defaults: UserDefaults = .standard, appURL: URL = Bundle.main.bundleURL, pid: Int32 = ProcessInfo.processInfo.processIdentifier, isSimulation: Bool = false, now: @escaping @Sendable () -> Date = Date.init) {
+    public init(service: any UpdateServicing, sourceRecordURL: URL, resultURL: URL, logURL: URL, defaults: UserDefaults = .standard, appURL: URL = Bundle.main.bundleURL, pid: Int32 = ProcessInfo.processInfo.processIdentifier, isSimulation: Bool = false, now: @escaping @Sendable () -> Date = Date.init, binaryClient: GitHubReleaseClient = GitHubReleaseClient(), binaryDownloader: BinaryUpdateDownloader = BinaryUpdateDownloader(), binaryVerifier: BinaryArtifactVerifier = BinaryArtifactVerifier(), binaryStagingURL: URL? = nil, runningVersion: SemanticVersion? = nil) {
         self.service = service; self.sourceRecordURL = sourceRecordURL; self.resultURL = resultURL; self.logURL = logURL
         self.defaults = defaults; self.appURL = appURL; self.pid = pid; self.isSimulation = isSimulation; self.now = now
+        self.binaryClient = binaryClient; self.binaryValidator = ReleaseMetadataValidator(); self.binaryDownloader = binaryDownloader; self.binaryVerifier = binaryVerifier
+        self.binaryStagingURL = binaryStagingURL ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/DFUUtility/Updates", isDirectory: true)
+        self.runningVersion = runningVersion ?? Bundle(url: appURL)?.infoDictionary.flatMap { SemanticVersion(string: $0["CFBundleShortVersionString"] as? String) } ?? Bundle.main.infoDictionary.flatMap { SemanticVersion(string: $0["CFBundleShortVersionString"] as? String) }
     }
 
     public convenience init() {
@@ -166,6 +189,7 @@ public final class UpdateCoordinator: ObservableObject {
     public static func simulated() -> UpdateCoordinator {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Update-Test", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: root.appendingPathComponent(".git"), withIntermediateDirectories: true)
         let record = root.appendingPathComponent("update-source")
         try? root.path.write(to: record, atomically: true, encoding: .utf8)
         let defaults = UserDefaults(suiteName: "org.dfuutility.update-test.\(UUID().uuidString)")!
@@ -181,14 +205,22 @@ public final class UpdateCoordinator: ObservableObject {
 
     public func check(manual: Bool) async {
         sourceCheckoutUnavailable = false
+        verifiedBinaryArtifact = nil
         state = .checking
         do {
-            let source = try recordedSource()
-            state = try await service.check(sourceRoot: source)
+            switch installationMode {
+            case .source(let source): state = try await service.check(sourceRoot: source)
+            case .binary:
+                guard let runningVersion else { throw BinaryUpdateError.invalidVersionTag("installed version unavailable") }
+                let releases = try await binaryClient.releases()
+                if let candidate = binaryValidator.selectLatest(from: releases, installed: runningVersion) { state = .binaryAvailable(candidate) }
+                else { state = .current }
+            case .invalidSourceRecord(let detail): throw UpdateServiceError.sourceInvalid(detail)
+            }
             defaults.set(now(), forKey: Self.lastCheckKey)
         } catch {
             switch error {
-            case UpdateServiceError.sourceNotRecorded, UpdateServiceError.sourceMissing, UpdateServiceError.sourceInvalid, UpdateServiceError.updaterMissing:
+            case UpdateServiceError.sourceMissing, UpdateServiceError.sourceInvalid, UpdateServiceError.updaterMissing:
                 sourceCheckoutUnavailable = true
             default: break
             }
@@ -201,6 +233,70 @@ public final class UpdateCoordinator: ObservableObject {
             }
             state = manual ? .failed(sourceCheckoutUnavailable ? Self.sourceGuidance : error.localizedDescription) : .idle
         }
+    }
+
+    public var installationMode: InstallationUpdateMode {
+        // A packaged `.app` without a source record is a normal binary
+        // installation. Test/developer callers without a packaged bundle keep
+        // the actionable source-record failure semantics.
+        guard FileManager.default.fileExists(atPath: sourceRecordURL.path) else {
+            return appURL.pathExtension.lowercased() == "app" ? .binary : .invalidSourceRecord("No source checkout has been recorded.")
+        }
+        guard let value = try? String(contentsOf: sourceRecordURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return .invalidSourceRecord("The recorded source checkout path is empty.") }
+        let url = URL(fileURLWithPath: value, isDirectory: true)
+        var directory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue else { return .invalidSourceRecord("The recorded source checkout no longer exists.") }
+        let git = url.appendingPathComponent(".git")
+        guard FileManager.default.fileExists(atPath: git.path) else { return .invalidSourceRecord("The recorded source path is not a Git worktree.") }
+        return .source(url)
+    }
+
+    public func downloadBinaryUpdate() async {
+        guard case .binaryAvailable(let release) = state else { return }
+        state = .downloading
+        do {
+            do { try FileManager.default.createDirectory(at: binaryStagingURL, withIntermediateDirectories: true) }
+            catch { throw BinaryUpdateError.stagingFailure(error.localizedDescription) }
+            // Candidate directories are identity-scoped. Remove only prior
+            // updater-owned candidates so an older verified artifact cannot be
+            // accidentally reused for a later release.
+            if let entries = try? FileManager.default.contentsOfDirectory(at: binaryStagingURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+                for entry in entries { try? FileManager.default.removeItem(at: entry) }
+            }
+            let candidateRoot = binaryStagingURL.appendingPathComponent(release.version.description, isDirectory: true)
+            do { try FileManager.default.createDirectory(at: candidateRoot, withIntermediateDirectories: true) }
+            catch { throw BinaryUpdateError.stagingFailure(error.localizedDescription) }
+            let downloaded = try await binaryDownloader.download(release, in: candidateRoot)
+            state = .verifying
+            let extractRoot = candidateRoot.appendingPathComponent("extracted", isDirectory: true)
+            let artifact = try binaryVerifier.verify(downloaded, release: release, stagingDirectory: extractRoot)
+            let marker = candidateRoot.appendingPathComponent("verified.json")
+            let markerData = try JSONEncoder().encode(BinaryVerifiedMarker(version: artifact.version.description, digest: release.digest, build: artifact.build))
+            do { try markerData.write(to: marker, options: .atomic) }
+            catch { throw BinaryUpdateError.stagingFailure(error.localizedDescription) }
+            verifiedBinaryArtifact = artifact
+            state = .verifiedReady(artifact)
+        } catch is CancellationError {
+            state = .failed(BinaryUpdateError.cancelled.localizedDescription)
+        } catch {
+            verifiedBinaryArtifact = nil
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    public func startBinaryDownload() {
+        guard binaryDownloadTask == nil else { return }
+        binaryDownloadTask = Task { [weak self] in
+            guard let self else { return }
+            await self.downloadBinaryUpdate()
+            self.binaryDownloadTask = nil
+        }
+    }
+
+    public func cancelBinaryDownload() {
+        binaryDownloadTask?.cancel()
+        binaryDownloadTask = nil
+        if case .downloading = state { state = .failed("Update download cancelled.") }
     }
 
     public func launchUpdate() throws {
@@ -235,6 +331,7 @@ public final class UpdateCoordinator: ObservableObject {
     public func clearResult() { pendingResult = nil }
 
     public var shareableSourceHealth: String {
+        if case .binary = installationMode { return "Binary installation; Git source not required" }
         do {
             _ = try recordedSource()
             return "Recorded source available"
@@ -253,5 +350,18 @@ public final class UpdateCoordinator: ObservableObject {
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue else { throw UpdateServiceError.sourceMissing }
         return url
+    }
+}
+
+private struct BinaryVerifiedMarker: Codable, Sendable {
+    let version: String
+    let digest: String
+    let build: String
+}
+
+private extension SemanticVersion {
+    init?(string: String?) {
+        guard let string else { return nil }
+        self.init(tag: "v\(string)")
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 @testable import DFUCore
 
@@ -6,6 +7,48 @@ private let sampleURL = URL(string: "https://updates.cdn-apple.com/test/Universa
 private func release(version: String = "26.6.2", build: String = "25G83", size: Int64? = nil) -> IPSWRelease { IPSWRelease(version: version, build: build, downloadURL: sampleURL, fileSize: size, checksum: nil, supportedDevices: ["Mac14,2"]) }
 private func temporaryDirectory() throws -> URL { let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true); return url }
 private func fixture(_ name: String) throws -> Data { try Data(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/\(name)")) }
+
+private struct ReleaseHTTPFixture: HTTPDataFetching {
+    let data: Data; let status: Int
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        (data, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+private final class ArchiveFixtureRunner: @unchecked Sendable, CommandRunning {
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult {
+        if arguments.first == "-Z1" { return result("DFUUtility.app/Contents/Info.plist\nDFUUtility.app/Contents/MacOS/DFUUtility\n") }
+        if arguments.first == "-qq" {
+            let root = URL(fileURLWithPath: arguments.last!)
+            let app = root.appendingPathComponent("DFUUtility.app")
+            try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents/Library/LaunchServices"), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents/Resources/ThirdPartyLicenses"), withIntermediateDirectories: true)
+            let info: [String: Any] = ["CFBundleIdentifier": "org.dfuutility.app", "CFBundleShortVersionString": "0.10.0", "CFBundleVersion": "1"]
+            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
+            for path in ["Contents/MacOS/DFUUtility", "Contents/Library/LaunchServices/DFUPrivilegedHelper", "Contents/Resources/macvdmtool", "Contents/Resources/DFUUtility-LICENSE.txt", "Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt", "Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt"] {
+                try Data().write(to: app.appendingPathComponent(path)); try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: app.appendingPathComponent(path).path)
+            }
+        }
+        return result("")
+    }
+}
+
+private final class ListingRunner: @unchecked Sendable, CommandRunning {
+    let listing: String
+    init(_ listing: String) { self.listing = listing }
+    func run(_ executable: URL, arguments: [String]) throws -> CommandResult { result(listing) }
+}
+
+private struct BinaryNetworkFixture: BinaryUpdateNetworking {
+    let bytes: Data
+    func download(_ url: URL, expectedSize: Int64, maximumSize: Int64, to destination: URL) async throws -> Int64 {
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try bytes.write(to: destination)
+        guard Int64(bytes.count) == expectedSize else { throw BinaryUpdateError.sizeMismatch(expected: expectedSize, actual: Int64(bytes.count)) }
+        return Int64(bytes.count)
+    }
+}
 
 private struct AcceptValidator: IPSWValidating { func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { guard FileManager.default.fileExists(atPath: url.path) else { throw DFUError.invalidIPSW("missing") } } }
 private struct RejectValidator: IPSWValidating { func validate(_ url: URL, release: IPSWRelease?, verifyChecksum: Bool) throws { throw DFUError.invalidIPSW("test rejection") } }
@@ -52,6 +95,67 @@ private final class CapturingValidator: @unchecked Sendable, IPSWValidating {
     ]]]]
     let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0), parsed = try AppleIPSWCatalogue.parse(data)
     #expect(parsed.count == 1); #expect(parsed[0].version == "26.6.2"); #expect(parsed[0].checksum == "abc"); #expect(parsed[0].supportedDevices == ["Mac14,2", "Mac15,3"])
+}
+
+@Test func binaryUpdateSemanticVersionsAreStrictAndNumeric() {
+    #expect(SemanticVersion(tag: "v0.10.0")! > SemanticVersion(tag: "v0.9.0")!)
+    #expect(SemanticVersion(tag: "v0.9.10")! > SemanticVersion(tag: "v0.9.9")!)
+    #expect(SemanticVersion(tag: "0.10.0") == nil)
+    #expect(SemanticVersion(tag: "v01.2.3") == nil)
+    #expect(SemanticVersion(tag: "v1.0.0-beta") == nil)
+}
+
+@Test func githubReleaseSelectionRejectsUntrustedOrUnusableMetadata() throws {
+    let asset = GitHubReleaseAsset(name: "DFUUtility-0.10.0.zip", downloadURL: URL(string: "https://github.com/thehallifax/DFUUtility/releases/download/v0.10.0/DFUUtility-0.10.0.zip")!, size: 100, digest: "sha256:" + String(repeating: "a", count: 64))
+    let validator = ReleaseMetadataValidator(); let installed = SemanticVersion(tag: "v0.9.0")!
+    let valid = try validator.validate(.init(tagName: "v0.10.0", draft: false, prerelease: false, releaseURL: nil, assets: [asset]), installed: installed)
+    #expect(valid.version.description == "0.10.0")
+    #expect(throws: BinaryUpdateError.self) { try validator.validate(.init(tagName: "v0.10.0-beta", draft: false, prerelease: true, releaseURL: nil, assets: [asset]), installed: installed) }
+    #expect(throws: BinaryUpdateError.self) { try validator.validate(.init(tagName: "v0.10.0", draft: false, prerelease: false, releaseURL: nil, assets: [asset, asset]), installed: installed) }
+    let badURL = GitHubReleaseAsset(name: asset.name, downloadURL: URL(string: "http://evil.example/update.zip")!, size: 100, digest: asset.digest)
+    #expect(throws: BinaryUpdateError.self) { try validator.validate(.init(tagName: "v0.10.0", draft: false, prerelease: false, releaseURL: nil, assets: [badURL]), installed: installed) }
+    let badDigest = GitHubReleaseAsset(name: asset.name, downloadURL: asset.downloadURL, size: 100, digest: "sha256:bad")
+    #expect(throws: BinaryUpdateError.self) { try validator.validate(.init(tagName: "v0.10.0", draft: false, prerelease: false, releaseURL: nil, assets: [badDigest]), installed: installed) }
+    let draft = GitHubReleaseMetadata(tagName: "v0.11.0", draft: true, prerelease: false, releaseURL: nil, assets: [asset])
+    #expect(validator.selectLatest(from: [draft, .init(tagName: "v0.10.0", draft: false, prerelease: false, releaseURL: nil, assets: [asset])], installed: installed)?.version == SemanticVersion(tag: "v0.10.0")!)
+}
+
+@Test func githubReleaseClientUsesFixedEndpointAndParsesStableFields() async throws {
+    let json = #"[{"tag_name":"v0.10.0","draft":false,"prerelease":false,"html_url":"https://github.com/thehallifax/DFUUtility/releases/tag/v0.10.0","assets":[{"name":"DFUUtility-0.10.0.zip","browser_download_url":"https://github.com/thehallifax/DFUUtility/releases/download/v0.10.0/DFUUtility-0.10.0.zip","size":100,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}]"#.data(using: .utf8)!
+    let releases = try await GitHubReleaseClient(client: ReleaseHTTPFixture(data: json, status: 200)).releases()
+    #expect(releases.count == 1); #expect(releases[0].tagName == "v0.10.0"); #expect(releases[0].assets[0].digest?.hasPrefix("sha256:") == true)
+}
+
+@Test func binaryArtifactDigestAndBundleStructureAreVerifiedWithoutInstallation() throws {
+    let root = try temporaryDirectory(), archive = root.appendingPathComponent("DFUUtility-0.10.0.zip")
+    let bytes = Data("fixture archive bytes".utf8); try bytes.write(to: archive)
+    let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    let asset = GitHubReleaseAsset(name: "DFUUtility-0.10.0.zip", downloadURL: URL(string: "https://github.com/thehallifax/DFUUtility/releases/download/v0.10.0/DFUUtility-0.10.0.zip")!, size: Int64(bytes.count), digest: "sha256:\(digest)")
+    let release = try ReleaseMetadataValidator().validate(.init(tagName: "v0.10.0", draft: false, prerelease: false, releaseURL: nil, assets: [asset]), installed: SemanticVersion(tag: "v0.9.0")!)
+    let artifact = DownloadedBinaryArtifact(url: archive, byteCount: Int64(bytes.count))
+    let verified = try BinaryArtifactVerifier(runner: ArchiveFixtureRunner()).verify(artifact, release: release, stagingDirectory: root.appendingPathComponent("staging"))
+    #expect(verified.version.description == "0.10.0"); #expect(verified.build == "1"); #expect(verified.appURL.path.hasPrefix(root.path))
+    try Data("different".utf8).write(to: archive)
+    #expect(throws: BinaryUpdateError.self) { try BinaryArtifactVerifier(runner: ArchiveFixtureRunner()).verify(artifact, release: release, stagingDirectory: root.appendingPathComponent("staging-bad")) }
+}
+
+@Test func binaryArchiveRejectsTraversalAndMultipleApplicationBundles() throws {
+    let root = try temporaryDirectory(), archive = root.appendingPathComponent("update.zip")
+    try Data("archive".utf8).write(to: archive)
+    for listing in ["../outside\n", "DFUUtility.app/Contents/a\nOther.app/Contents/b\n", "/absolute\n"] {
+        #expect(throws: BinaryUpdateError.self) { try SafeZIPInspector(runner: ListingRunner(listing)).extract(archive, into: root.appendingPathComponent(UUID().uuidString)) }
+    }
+}
+
+@Test func binaryDownloaderCleansFailedArtifactAndUsesControlledDestination() async throws {
+    let root = try temporaryDirectory(), destination = root.appendingPathComponent("downloads")
+    let bytes = Data("binary".utf8), asset = GitHubReleaseAsset(name: "DFUUtility-0.10.0.zip", downloadURL: URL(string: "https://github.com/thehallifax/DFUUtility/releases/download/v0.10.0/DFUUtility-0.10.0.zip")!, size: Int64(bytes.count), digest: "sha256:" + String(repeating: "a", count: 64))
+    let release = ValidatedBinaryRelease(version: SemanticVersion(tag: "v0.10.0")!, releaseURL: nil, asset: asset, digest: String(repeating: "a", count: 64))
+    let downloaded = try await BinaryUpdateDownloader(networking: BinaryNetworkFixture(bytes: bytes)).download(release, in: destination)
+    #expect(downloaded.byteCount == Int64(bytes.count)); #expect(downloaded.url.path.hasPrefix(destination.path))
+    let mismatch = GitHubReleaseAsset(name: asset.name, downloadURL: asset.downloadURL, size: Int64(bytes.count + 1), digest: asset.digest)
+    let bad = ValidatedBinaryRelease(version: release.version, releaseURL: nil, asset: mismatch, digest: release.digest)
+    do { _ = try await BinaryUpdateDownloader(networking: BinaryNetworkFixture(bytes: bytes)).download(bad, in: destination); Issue.record("Expected size mismatch") } catch { #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent(asset.name).path)) }
 }
 
 @Test func parsesAppleMobileCatalogueByFamilyAndProductType() async throws {

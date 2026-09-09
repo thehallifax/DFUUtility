@@ -336,7 +336,10 @@ public final class AppModel: ObservableObject {
     public func cacheRevealURL(for entry: ManagedIPSWEntry) -> URL { entry.url }
     public func prepareCacheDirectoryForReveal() -> URL? { do { try cache.prepare(); return cache.directory } catch { presentedError = "Unable to open the IPSW cache.\n\(error.localizedDescription)"; return nil } }
     public var operationInProgress: Bool {
-        if case .preparing = updateCoordinator.state { return true }
+        switch updateCoordinator.state {
+        case .preparing, .downloading, .verifying: return true
+        default: break
+        }
         if batchCoordinator.isRunning { return true }
         if case .running = restoreState { return true }
         if case .reconnecting = restoreState { return true }
@@ -348,6 +351,19 @@ public final class AppModel: ObservableObject {
         let validating: Bool = if case .validating = downloadState { true } else if case .validating = imageState { true } else { false }
         return UpdateOperationSnapshot(restoreOrReconnect: operationInProgress, download: downloading, validation: validating, guidedDFU: mobileDFUAssistant?.isMonitoring == true, batch: batchCoordinator.isRunning).permitsUpdate
     }
+    public var canDownloadBinaryUpdate: Bool {
+        guard !isDemoMode, !isScreenshotPresentation, case .binaryAvailable = updateCoordinator.state else { return false }
+        return canStartUpdate
+    }
+    public func downloadBinaryUpdate() async {
+        guard canDownloadBinaryUpdate else { return }
+        await updateCoordinator.downloadBinaryUpdate()
+    }
+    public func startBinaryDownload() {
+        guard canDownloadBinaryUpdate else { return }
+        updateCoordinator.startBinaryDownload()
+    }
+    public func cancelBinaryDownload() { updateCoordinator.cancelBinaryDownload() }
     public var updateBlockedMessage: String { "Finish the current DFUUtility operation before updating." }
     private var updateLaunchInProgress: Bool { if case .preparing = updateCoordinator.state { true } else { false } }
     public var reconnectInProgress: Bool { if case .reconnecting = restoreState { true } else { false } }

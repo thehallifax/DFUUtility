@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import DFUAppSupport
+@testable import DFUCore
 
 private final class UpdateServiceBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -35,8 +36,39 @@ private func updateFixture(_ name: String = UUID().uuidString) throws -> (URL, U
     let source = root.appendingPathComponent("source clone with spaces")
     let record = root.appendingPathComponent("update-source")
     try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: source.appendingPathComponent(".git"), withIntermediateDirectories: true)
     try source.path.write(to: record, atomically: true, encoding: .utf8)
     return (root, source, record)
+}
+
+private struct BinaryHTTPFixture: HTTPDataFetching {
+    let payload: Data
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        (payload, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+@MainActor @Test func binaryInstallationModeChecksStableReleaseWithoutDownloading() async throws {
+    let root = try FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: FileManager.default.temporaryDirectory, create: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let payload = #"[{"tag_name":"v0.10.0","draft":false,"prerelease":false,"html_url":"https://github.com/thehallifax/DFUUtility/releases/tag/v0.10.0","assets":[{"name":"DFUUtility-0.10.0.zip","browser_download_url":"https://github.com/thehallifax/DFUUtility/releases/download/v0.10.0/DFUUtility-0.10.0.zip","size":10,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}]"#.data(using: .utf8)!
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: UpdateServiceBox()), sourceRecordURL: root.appendingPathComponent("missing-source"), resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"), appURL: root.appendingPathComponent("DFUUtility.app"), binaryClient: GitHubReleaseClient(client: BinaryHTTPFixture(payload: payload)), runningVersion: SemanticVersion(tag: "v0.9.0"))
+    #expect(coordinator.installationMode == .binary)
+    await coordinator.check(manual: true)
+    guard case .binaryAvailable(let release) = coordinator.state else { Issue.record("Expected binary release availability"); return }
+    #expect(release.version == SemanticVersion(tag: "v0.10.0")!)
+    #expect(coordinator.verifiedBinaryArtifact == nil)
+}
+
+@MainActor @Test func existingNonGitSourceRecordIsNotSilentlyTreatedAsBinary() async throws {
+    let root = try FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: FileManager.default.temporaryDirectory, create: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("not-a-repository"); try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    let record = root.appendingPathComponent("update-source"); try source.path.write(to: record, atomically: true, encoding: .utf8)
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: UpdateServiceBox()), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"), appURL: root.appendingPathComponent("DFUUtility.app"))
+    guard case .invalidSourceRecord = coordinator.installationMode else { Issue.record("Expected invalid source record"); return }
+    await coordinator.check(manual: true)
+    #expect(coordinator.sourceCheckoutUnavailable)
 }
 
 @MainActor @Test func recordedSourceWithSpacesSupportsCheckAndLaunch() async throws {
