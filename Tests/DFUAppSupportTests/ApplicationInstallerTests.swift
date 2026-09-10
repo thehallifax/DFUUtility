@@ -66,3 +66,27 @@ private func installerFixture() throws -> (URL, URL, URL) {
     try Data("not-json".utf8).write(to: url)
     #expect(throws: ApplicationInstallError.self) { try store.read() }
 }
+
+@Test @MainActor func generatedBackupPathUsesRealUniqueUUID() {
+    let destination = URL(fileURLWithPath: "/tmp/DFUUtility.app")
+    let first = UpdateCoordinator.backupURL(for: destination)
+    let second = UpdateCoordinator.backupURL(for: destination)
+    #expect(first.deletingLastPathComponent() == destination.deletingLastPathComponent())
+    #expect(first.lastPathComponent.hasPrefix(".DFUUtility-backup-"))
+    #expect(!first.lastPathComponent.contains("UUID().uuidString"))
+    #expect(first != second)
+    #expect(UUID(uuidString: String(first.lastPathComponent.dropFirst(".DFUUtility-backup-".count))) != nil)
+}
+
+@Test func transactionCarriesOriginatingPIDForInstallerHandoff() {
+    let tx = BinaryInstallTransaction(expectedVersion: SemanticVersion(tag: "v0.10.4")!, expectedBuild: "1", artifactURL: URL(fileURLWithPath: "/tmp/a.app"), destinationURL: URL(fileURLWithPath: "/tmp/DFUUtility.app"), backupURL: URL(fileURLWithPath: "/tmp/.backup"), resultURL: URL(fileURLWithPath: "/tmp/result"), originatingPID: 4242)
+    #expect(tx.originatingPID == 4242)
+}
+
+@Test func relaunchObservationRequiresDistinctProcessAtExpectedBundle() {
+    let expected = URL(fileURLWithPath: "/tmp/DFUUtility.app")
+    #expect(BinaryHandoffPolicy.accepts(observedPID: 200, originatingPID: 100, observedBundleURL: expected, expectedBundleURL: expected))
+    #expect(!BinaryHandoffPolicy.accepts(observedPID: 100, originatingPID: 100, observedBundleURL: expected, expectedBundleURL: expected))
+    #expect(!BinaryHandoffPolicy.accepts(observedPID: 200, originatingPID: 100, observedBundleURL: URL(fileURLWithPath: "/tmp/Other.app"), expectedBundleURL: expected))
+    #expect(!BinaryHandoffPolicy.accepts(observedPID: 200, originatingPID: 100, observedBundleURL: nil, expectedBundleURL: expected))
+}

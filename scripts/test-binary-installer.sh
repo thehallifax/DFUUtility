@@ -19,6 +19,7 @@ trap cleanup EXIT INT TERM
 reset_fixture() {
     chmod -R 700 "$root" 2>/dev/null || true
     rm -rf "$destinationParent" "$support"
+    rm -f "$launchMarker"
     mkdir -p "$destinationParent" "$staging"
 }
 
@@ -51,7 +52,7 @@ for path in "$support" "$destination" "$staging" "$backup" "$descriptor" "$resul
 [ "$destination" != "/Applications/DFUUtility.app" ] || { echo 'Real application path is forbidden.' >&2; exit 1; }
 
 mkdir -p "$support" "$destinationParent" "$staging"
-printf '#!/bin/sh\nprintf "%%s\\n" "$1" > "%s"\n' "$launchMarker" > "$launcher"
+printf '#!/bin/sh\nif [ -e "%s" ]; then printf "success-result-visible-before-relaunch\\n" > "%s"; exit 9; fi\nprintf "%%s\\n" "$1" > "%s"\n' "$result" "$launchMarker" "$launchMarker" > "$launcher"
 chmod 755 "$launcher"
 
 make_bundle() {
@@ -147,7 +148,20 @@ printf '{not-json}\n' > "$descriptor"
 if run_helper; then echo 'Malformed transaction unexpectedly accepted.' >&2; exit 1; fi
 [ "$(cat "$destination/Contents/Resources/fixture-marker")" = old ] || { echo 'Malformed transaction modified destination.' >&2; exit 1; }
 
-echo '5/5 relaunch isolation and safety assertions'
+echo '5/6 originating PID timeout aborts before replacement'
+reset_fixture
+make_bundle "$destination" 0.9.0 1 old
+make_bundle "$staging/DFUUtility.app" 0.10.0 2 new
+write_transaction "$staging/DFUUtility.app" 0.10.0 2 "$destination" "$backup" "$result"
+sleep 5 & old_pid=$!
+sed -i '' "s/\"phase\":\"preflight\"/\"originatingPID\":$old_pid,\"phase\":\"preflight\"/" "$descriptor"
+if DFUUTILITY_INSTALLER_TEST_TIMEOUT=0.2 run_helper; then echo 'Live originating PID unexpectedly allowed replacement.' >&2; kill "$old_pid" 2>/dev/null || true; exit 1; fi
+kill "$old_pid" 2>/dev/null || true
+assert_result failure
+[ "$(cat "$destination/Contents/Resources/fixture-marker")" = old ] || { echo 'Originating PID timeout modified destination.' >&2; exit 1; }
+[ ! -e "$launchMarker" ] || { echo 'Originating PID timeout relaunched application.' >&2; exit 1; }
+
+echo '6/6 relaunch isolation and safety assertions'
 [ "$destination" != "/Applications/DFUUtility.app" ] || { echo 'Harness refuses to use a real application path.' >&2; exit 1; }
 [ ! -e "$root/.git" ] || { echo 'Unexpected source-control mutation in fixture root.' >&2; exit 1; }
 [ ! -e "$root/real-install-marker" ] || { echo 'Unexpected real-install marker.' >&2; exit 1; }

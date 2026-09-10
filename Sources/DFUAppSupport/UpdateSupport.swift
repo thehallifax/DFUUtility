@@ -365,12 +365,16 @@ public final class UpdateCoordinator: ObservableObject {
         guard case .verifiedReady(let artifact) = state else { throw ApplicationInstallError.missingArtifact }
         let destination = try ApplicationDestinationPolicy().resolve(currentAppURL: appURL)
         _ = try ApplicationInstaller().preflight(artifact: artifact, destination: destination, stagingRoot: binaryStagingURL, operationAllowed: operationAllowed)
-        let backup = destination.deletingLastPathComponent().appendingPathComponent(".DFUUtility-backup-(UUID().uuidString)", isDirectory: true)
-        let transaction = BinaryInstallTransaction(expectedVersion: artifact.version, expectedBuild: artifact.build, artifactURL: artifact.appURL, destinationURL: destination, backupURL: backup, resultURL: binaryResultURL)
+        let backup = Self.backupURL(for: destination)
+        let transaction = BinaryInstallTransaction(expectedVersion: artifact.version, expectedBuild: artifact.build, artifactURL: artifact.appURL, destinationURL: destination, backupURL: backup, resultURL: binaryResultURL, originatingPID: pid)
         try BinaryInstallTransactionStore(url: binaryTransactionURL).write(transaction)
         state = .preparing
         do { try binaryHandoff.launch(transactionURL: binaryTransactionURL) }
         catch { state = .verifiedReady(artifact); throw error }
+    }
+
+    public static func backupURL(for destination: URL) -> URL {
+        destination.deletingLastPathComponent().appendingPathComponent(".DFUUtility-backup-" + UUID().uuidString, isDirectory: true)
     }
 
     public func launchUpdate() throws {

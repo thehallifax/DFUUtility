@@ -196,7 +196,7 @@ private struct BinaryHTTPFixture: HTTPDataFetching {
     let (root, _, record) = try updateFixture(); defer { try? FileManager.default.removeItem(at: root) }
     let result = root.appendingPathComponent("result")
     try "status=success\nold_version=0.6.1\nnew_version=0.6.1\n".write(to: result, atomically: true, encoding: .utf8)
-    let coordinator = UpdateCoordinator(service: MockUpdateService(box: UpdateServiceBox()), sourceRecordURL: record, resultURL: result, logURL: root.appendingPathComponent("log"))
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: UpdateServiceBox()), sourceRecordURL: record, resultURL: result, logURL: root.appendingPathComponent("log"), binaryTransactionURL: root.appendingPathComponent("binary-transaction"), binaryResultURL: root.appendingPathComponent("binary-result"))
     coordinator.consumeResult(); #expect(coordinator.pendingResult?.outcome == .success); #expect(!FileManager.default.fileExists(atPath: result.path))
     coordinator.clearResult(); coordinator.consumeResult(); #expect(coordinator.pendingResult == nil)
 }

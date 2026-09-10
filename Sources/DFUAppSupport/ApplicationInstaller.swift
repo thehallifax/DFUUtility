@@ -47,10 +47,11 @@ public struct BinaryInstallTransaction: Codable, Equatable, Sendable {
     public let destinationURL: URL
     public let backupURL: URL
     public let resultURL: URL
+    public let originatingPID: Int32?
     public var phase: ApplicationInstallPhase
     public let createdAt: Date
-    public init(id: UUID = UUID(), expectedVersion: SemanticVersion, expectedBuild: String, artifactURL: URL, destinationURL: URL, backupURL: URL, resultURL: URL, phase: ApplicationInstallPhase = .preflight, createdAt: Date = Date()) {
-        self.id = id; self.expectedVersion = expectedVersion; self.expectedBuild = expectedBuild; self.artifactURL = artifactURL; self.destinationURL = destinationURL; self.backupURL = backupURL; self.resultURL = resultURL; self.phase = phase; self.createdAt = createdAt
+    public init(id: UUID = UUID(), expectedVersion: SemanticVersion, expectedBuild: String, artifactURL: URL, destinationURL: URL, backupURL: URL, resultURL: URL, originatingPID: Int32? = nil, phase: ApplicationInstallPhase = .preflight, createdAt: Date = Date()) {
+        self.id = id; self.expectedVersion = expectedVersion; self.expectedBuild = expectedBuild; self.artifactURL = artifactURL; self.destinationURL = destinationURL; self.backupURL = backupURL; self.resultURL = resultURL; self.originatingPID = originatingPID; self.phase = phase; self.createdAt = createdAt
     }
 }
 
@@ -145,6 +146,13 @@ public struct ApplicationInstaller {
 
 public protocol BinaryInstallHandingOff: Sendable {
     func launch(transactionURL: URL) throws
+}
+
+public enum BinaryHandoffPolicy {
+    public static func accepts(observedPID: Int32, originatingPID: Int32?, observedBundleURL: URL?, expectedBundleURL: URL) -> Bool {
+        guard observedPID != originatingPID, let observedBundleURL else { return false }
+        return observedBundleURL.standardizedFileURL == expectedBundleURL.standardizedFileURL
+    }
 }
 
 public struct ExternalBinaryInstallHandoff: BinaryInstallHandingOff {
