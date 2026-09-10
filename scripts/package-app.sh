@@ -1,14 +1,16 @@
 #!/bin/sh
 set -eu
 
-usage() { echo "Usage: scripts/package-app.sh [debug|release] [--identity \"Apple Development or Developer ID Application identity\"]" >&2; exit "${1:-64}"; }
+usage() { echo "Usage: scripts/package-app.sh [debug|release] [--source-install] [--identity \"Apple Development or Developer ID Application identity\"]" >&2; exit "${1:-64}"; }
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 configuration=release
 identity=""
+installation_kind=distribution
 if [ "$#" -gt 0 ] && { [ "$1" = debug ] || [ "$1" = release ]; }; then configuration=$1; shift; fi
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --identity) [ "$#" -ge 2 ] || usage; identity=$2; shift 2 ;;
+    --source-install) installation_kind=source; shift ;;
     --help|-h) usage 0 ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
@@ -68,6 +70,7 @@ plutil -insert DFUUtilityGitCommit -string "$git_commit" "$app/Contents/Info.pli
 plutil -insert DFUUtilityBuildDate -string "$build_date" "$app/Contents/Info.plist"
 plutil -insert DFUUtilityHelperProtocolVersion -integer "$HELPER_PROTOCOL_VERSION" "$app/Contents/Info.plist"
 plutil -insert DFUUtilityMacVDMToolRevision -string "$MACVDMTOOL_REVISION" "$app/Contents/Info.plist"
+plutil -insert DFUUtilityInstallationKind -string "$installation_kind" "$app/Contents/Info.plist"
 
 if [ "$signing_mode" != development-ad-hoc ]; then
   common="--force --timestamp --options runtime --sign"

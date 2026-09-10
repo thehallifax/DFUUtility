@@ -10,13 +10,19 @@ The extracted bundle must contain the expected `org.dfuutility.app` identifier, 
 
 This is not publisher authentication. Community artifacts are ad-hoc signed, so structural verification does not establish an Apple-authenticated Developer ID identity. Developer ID signing, notarization, and a stronger release-signing/manifest model remain future distribution work.
 
-Installation mode is selected from the recorded update-source file. A missing
-record means the app is a normal binary install and uses GitHub Releases. A
-recorded existing directory remains a source/developer install and continues
-to use the clean-worktree, expected-origin, main-branch, fetch-first,
-fast-forward-only source updater. A recorded path that has moved or is not a
-Git worktree is reported as an invalid source checkout with reinstall guidance;
-it is never silently converted into a source update.
+Installation mode is selected from installation provenance first. Packaged
+distribution bundles carry `DFUUtilityInstallationKind=distribution` in their
+generated bundle metadata and use GitHub Releases even if an older machine-
+global `update-source` record remains. Source installs are packaged with
+`DFUUtilityInstallationKind=source` by `scripts/install-local.sh` and continue
+to use the recorded checkout. The marker is a mode-selection signal, not a
+publisher-authentication boundary.
+
+Unmarked historical bundles retain the legacy conservative behavior: an
+existing source record remains source-mode, while a packaged `.app` without a
+record uses binary mode. A recorded path that has moved or is not a Git
+worktree is reported as an invalid source checkout with reinstall guidance; it
+is never silently converted into a source update.
 
 For binary installs, the coordinator checks stable GitHub Releases without
 downloading. The user must explicitly choose **Download Update**. Downloaded

@@ -41,6 +41,15 @@ private func updateFixture(_ name: String = UUID().uuidString) throws -> (URL, U
     return (root, source, record)
 }
 
+private func markedApp(_ root: URL, kind: ApplicationInstallationKind) throws -> URL {
+    let app = root.appendingPathComponent("DFUUtility.app")
+    let contents = app.appendingPathComponent("Contents")
+    try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+    let info: [String: Any] = ["CFBundleIdentifier": ApplicationDestinationPolicy.bundleIdentifier, "CFBundleShortVersionString": "0.10.0", "CFBundleVersion": "1", "DFUUtilityInstallationKind": kind.rawValue]
+    try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
+    return app
+}
+
 private struct BinaryHTTPFixture: HTTPDataFetching {
     let payload: Data
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
@@ -58,6 +67,39 @@ private struct BinaryHTTPFixture: HTTPDataFetching {
     guard case .binaryAvailable(let release) = coordinator.state else { Issue.record("Expected binary release availability"); return }
     #expect(release.version == SemanticVersion(tag: "v0.10.0")!)
     #expect(coordinator.verifiedBinaryArtifact == nil)
+}
+
+@MainActor @Test func markedSourceInstallationUsesSourceUpdater() throws {
+    let (root, source, record) = try updateFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let app = try markedApp(root, kind: .source)
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: UpdateServiceBox()), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"), appURL: app)
+    guard case .source(let selected) = coordinator.installationMode else { Issue.record("Expected marked source installation"); return }
+    #expect(selected.standardizedFileURL.path == source.standardizedFileURL.path)
+}
+
+@MainActor @Test func markedDistributionIgnoresStaleSourceRegistration() throws {
+    let (root, source, record) = try updateFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let app = try markedApp(root, kind: .distribution)
+    #expect(FileManager.default.fileExists(atPath: source.appendingPathComponent(".git").path))
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: UpdateServiceBox()), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"), appURL: app)
+    #expect(coordinator.installationMode == .binary)
+}
+
+@MainActor @Test func markedSourceInstallationDoesNotSilentlyFallBackToBinary() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let app = try markedApp(root, kind: .source)
+    let record = root.appendingPathComponent("update-source")
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: UpdateServiceBox()), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"), appURL: app)
+    guard case .invalidSourceRecord = coordinator.installationMode else { Issue.record("Expected marked source install to remain source-mode") ; return }
+}
+
+@MainActor @Test func unmarkedLegacySourceRegistrationRemainsSourceMode() throws {
+    let (root, source, record) = try updateFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let app = root.appendingPathComponent("DFUUtility.app")
+    let coordinator = UpdateCoordinator(service: MockUpdateService(box: UpdateServiceBox()), sourceRecordURL: record, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"), appURL: app)
+    guard case .source(let selected) = coordinator.installationMode else { Issue.record("Expected legacy source installation"); return }
+    #expect(selected.standardizedFileURL.path == source.standardizedFileURL.path)
 }
 
 @MainActor @Test func existingNonGitSourceRecordIsNotSilentlyTreatedAsBinary() async throws {

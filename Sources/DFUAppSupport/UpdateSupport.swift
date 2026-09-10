@@ -67,6 +67,11 @@ public enum InstallationUpdateMode: Equatable, Sendable {
     case invalidSourceRecord(String)
 }
 
+public enum ApplicationInstallationKind: String, Sendable {
+    case distribution
+    case source
+}
+
 @MainActor public protocol ApplicationTerminationRequesting: AnyObject {
     func requestTermination()
 }
@@ -245,11 +250,41 @@ public final class UpdateCoordinator: ObservableObject {
     }
 
     public var installationMode: InstallationUpdateMode {
-        // A packaged `.app` without a source record is a normal binary
-        // installation. Test/developer callers without a packaged bundle keep
-        // the actionable source-record failure semantics.
+        // A packaged distribution carries positive provenance in its bundle
+        // metadata. This prevents a historical machine-global source record
+        // from hijacking a later manually copied release. Unmarked bundles
+        // retain the legacy behavior so older source installs do not silently
+        // switch update mechanisms.
+        if let kind = Self.installationKind(at: appURL) {
+            if kind == .distribution { return .binary }
+            return sourceInstallationMode()
+        }
+        return legacyInstallationMode()
+    }
+
+    public static func installationKind(at appURL: URL) -> ApplicationInstallationKind? {
+        guard appURL.pathExtension.lowercased() == "app" else { return nil }
+        guard let value = NSDictionary(contentsOf: appURL.appendingPathComponent("Contents/Info.plist"))?["DFUUtilityInstallationKind"] as? String else { return nil }
+        return ApplicationInstallationKind(rawValue: value)
+    }
+
+    private func sourceInstallationMode() -> InstallationUpdateMode {
+        // A marked source install must retain the source updater, but still
+        // reports missing/invalid registration rather than falling back to a
+        // binary update.
+        return recordedSourceMode(packagedMissingRecordIsBinary: false)
+    }
+
+    private func legacyInstallationMode() -> InstallationUpdateMode {
+        // Before provenance metadata existed, a packaged `.app` without a
+        // source record was a normal binary installation. Existing records
+        // remain source-mode to preserve historical developer installations.
+        return recordedSourceMode(packagedMissingRecordIsBinary: true)
+    }
+
+    private func recordedSourceMode(packagedMissingRecordIsBinary: Bool) -> InstallationUpdateMode {
         guard FileManager.default.fileExists(atPath: sourceRecordURL.path) else {
-            return appURL.pathExtension.lowercased() == "app" ? .binary : .invalidSourceRecord("No source checkout has been recorded.")
+            return packagedMissingRecordIsBinary && appURL.pathExtension.lowercased() == "app" ? .binary : .invalidSourceRecord("No source checkout has been recorded.")
         }
         guard let value = try? String(contentsOf: sourceRecordURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return .invalidSourceRecord("The recorded source checkout path is empty.") }
         let url = URL(fileURLWithPath: value, isDirectory: true)

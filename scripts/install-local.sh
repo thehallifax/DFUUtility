@@ -63,7 +63,7 @@ check_requirements() {
 
 run_tests_step() { swift test; }
 build_release() { swift build -c release; }
-package_app() { scripts/package-app.sh release; }
+package_app() { scripts/package-app.sh release --source-install; }
 verify_app() { scripts/verify-app.sh "$source_app"; }
 install_app() {
   rm -rf "$root/.build/local-install"
