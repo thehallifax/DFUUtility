@@ -65,6 +65,12 @@ else
   fail "Updater" "update scripts must be executable, syntax valid, safely bundled, and documented"
 fi
 
+if [ -x scripts/install-release.sh ] && [ -x scripts/test-install-release.sh ] && sh -n scripts/install-release.sh && sh -n scripts/test-install-release.sh && grep -Fq "Quick Terminal install" README.md && ! grep -Fq 'update-source' scripts/install-release.sh; then
+  pass "Release installer" "executable, syntax valid, distribution-only, documented"
+else
+  fail "Release installer" "release installer and harness must be executable, syntax valid, distribution-only, and documented"
+fi
+
 run_stage debug-build "Debug build" swift build || true
 if run_stage tests "Tests" swift test; then
   test_count=$(sed -n 's/.*Test run with \([0-9][0-9]*\) tests.*/\1/p' "$log_root/tests.log" | tail -1)

@@ -2,6 +2,18 @@
 
 DFUUtility is an open-source native macOS utility for entering supported Macs into DFU mode and restoring or reviving Apple devices with Apple IPSWs.
 
+## What does this actually do?
+
+DFUUtility helps you recover, restore, and manage Apple devices from a Mac without needing to know all of Apple's command-line tools.
+
+If a Mac, iPhone, or iPad needs to be restored, revived, put into DFU mode, or have its firmware reinstalled, DFUUtility gives you a graphical interface that guides you through the process.
+
+It's particularly useful for IT technicians managing Apple devices, but it's designed so you don't need to understand the commands happening underneath. It can find connected devices, download the correct Apple firmware, guide you through DFU mode, perform restores and revives, and show you what's happening as it works.
+
+Basically: plug in the Apple device, choose what you need to do, and DFUUtility handles the complicated bits.
+
+For example, if a MacBook won't boot properly, connect it to another Mac, open DFUUtility, follow the instructions to put it into DFU mode, and choose **Revive** or **Restore**. DFUUtility handles the Apple tooling and firmware workflow.
+
 ![DFUUtility multi-device workflow](docs/images/multiple-devices.png)
 
 Community releases are ad-hoc signed. No paid Apple Developer account is
@@ -82,6 +94,32 @@ Requirements: macOS 14 or newer, [Apple Configurator](https://apps.apple.com/app
 
 Community ZIPs are ad-hoc signed and are not notarized. macOS may show its
 standard confirmation for an app downloaded from the internet.
+
+#### Quick Terminal install
+
+To download, verify, and install the latest stable published release without
+piping a network response directly into a shell, paste this block into Terminal:
+
+```sh
+(
+  workdir="$(mktemp -d)" &&
+  trap 'rm -rf "$workdir"' EXIT &&
+  curl --proto '=https' --tlsv1.2 -fsSL \
+    https://raw.githubusercontent.com/thehallifax/DFUUtility/main/scripts/install-release.sh \
+    -o "$workdir/install-release.sh" &&
+  /bin/sh "$workdir/install-release.sh"
+)
+```
+
+Quit DFUUtility before running the installer. It installs
+`/Applications/DFUUtility.app` without changing macOS security settings or
+requesting administrator privileges. If `/Applications` is not writable, it
+stops with instructions to use the GitHub Release ZIP instead. The manual ZIP
+steps above remain the simplest alternative.
+
+This installer uses the published distribution artifact, not the current
+source branch. The installed app therefore uses **DFUUtility → Check for
+Updates…** for future releases.
 
 ### Updating
 
