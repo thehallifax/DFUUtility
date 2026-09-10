@@ -221,14 +221,15 @@ public final class UpdateCoordinator: ObservableObject {
         sourceCheckoutUnavailable = false
         verifiedBinaryArtifact = nil
         state = .checking
+        appendBinaryLog("binary update check started")
         do {
             switch installationMode {
             case .source(let source): state = try await service.check(sourceRoot: source)
             case .binary:
                 guard let runningVersion else { throw BinaryUpdateError.invalidVersionTag("installed version unavailable") }
                 let releases = try await binaryClient.releases()
-                if let candidate = binaryValidator.selectLatest(from: releases, installed: runningVersion) { state = .binaryAvailable(candidate) }
-                else { state = .current }
+                if let candidate = binaryValidator.selectLatest(from: releases, installed: runningVersion) { state = .binaryAvailable(candidate); appendBinaryLog("binary update available: " + candidate.version.description) }
+                else { state = .current; appendBinaryLog("binary update check completed: current") }
             case .invalidSourceRecord(let detail): throw UpdateServiceError.sourceInvalid(detail)
             }
             defaults.set(now(), forKey: Self.lastCheckKey)
@@ -246,6 +247,7 @@ public final class UpdateCoordinator: ObservableObject {
                 _ = try? handle.seekToEnd(); try? handle.write(contentsOf: Data(detail.utf8))
             }
             state = manual ? .failed(sourceCheckoutUnavailable ? Self.sourceGuidance : error.localizedDescription) : .idle
+            appendBinaryLog("binary update check failed: " + error.localizedDescription)
         }
     }
 
@@ -298,6 +300,7 @@ public final class UpdateCoordinator: ObservableObject {
     public func downloadBinaryUpdate() async {
         guard case .binaryAvailable(let release) = state else { return }
         state = .downloading
+        appendBinaryLog("binary update download started")
         do {
             do { try FileManager.default.createDirectory(at: binaryStagingURL, withIntermediateDirectories: true) }
             catch { throw BinaryUpdateError.stagingFailure(error.localizedDescription) }
@@ -311,6 +314,7 @@ public final class UpdateCoordinator: ObservableObject {
             do { try FileManager.default.createDirectory(at: candidateRoot, withIntermediateDirectories: true) }
             catch { throw BinaryUpdateError.stagingFailure(error.localizedDescription) }
             let downloaded = try await binaryDownloader.download(release, in: candidateRoot)
+            appendBinaryLog("binary update download completed: " + String(downloaded.byteCount) + " bytes")
             state = .verifying
             let extractRoot = candidateRoot.appendingPathComponent("extracted", isDirectory: true)
             let artifact = try binaryVerifier.verify(downloaded, release: release, stagingDirectory: extractRoot)
@@ -320,12 +324,26 @@ public final class UpdateCoordinator: ObservableObject {
             catch { throw BinaryUpdateError.stagingFailure(error.localizedDescription) }
             verifiedBinaryArtifact = artifact
             state = .verifiedReady(artifact)
+            appendBinaryLog("binary update archive and bundle verification completed")
         } catch is CancellationError {
             state = .failed(BinaryUpdateError.cancelled.localizedDescription)
         } catch {
             verifiedBinaryArtifact = nil
+            appendBinaryLog("binary update failed: " + error.localizedDescription)
             state = .failed(error.localizedDescription)
         }
+    }
+
+    private func appendBinaryLog(_ message: String) {
+        guard !isSimulation else { return }
+        do {
+            try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
+            let handle = try FileHandle(forWritingTo: logURL); defer { try? handle.close() }
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let line = "[" + timestamp + "] " + message + "\n"
+            try handle.seekToEnd(); try handle.write(contentsOf: Data(line.utf8))
+        } catch { }
     }
 
     public func startBinaryDownload() {

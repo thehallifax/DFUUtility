@@ -174,16 +174,48 @@ public protocol BinaryUpdateNetworking: Sendable {
     func download(_ url: URL, expectedSize: Int64, maximumSize: Int64, to destination: URL) async throws -> Int64
 }
 
+public enum BinaryRedirectPolicy {
+    public static let maximumRedirects = 5
+    public static let allowedHosts: Set<String> = ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"]
+
+    public static func allows(source: URL, destination: URL) -> Bool {
+        guard source.scheme?.lowercased() == "https", destination.scheme?.lowercased() == "https",
+              destination.user == nil, destination.port == nil,
+              let host = destination.host?.lowercased(), allowedHosts.contains(host),
+              destination.host?.contains(".") == true else { return false }
+        return true
+    }
+
+    public static func logMessage(source: URL?, destination: URL?, accepted: Bool) -> String {
+        let sourceHost = source?.host?.lowercased() ?? "unknown"
+        let destinationHost = destination?.host?.lowercased() ?? "unknown"
+        return "redirect " + (accepted ? "accepted" : "rejected") + ": " + sourceHost + " → " + destinationHost
+    }
+}
+
 public struct URLSessionBinaryUpdateNetworking: BinaryUpdateNetworking {
-    public init() {}
+    private let log: (@Sendable (String) -> Void)?
+    public init(log: (@Sendable (String) -> Void)? = nil) { self.log = log ?? URLSessionBinaryUpdateNetworking.appendDefaultLog }
+    private static func appendDefaultLog(_ message: String) {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DFUUtility/update.log")
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
+            let handle = try FileHandle(forWritingTo: url); defer { try? handle.close() }
+            try handle.seekToEnd(); let line = "[" + ISO8601DateFormatter().string(from: Date()) + "] " + message + "\n"; try handle.write(contentsOf: Data(line.utf8))
+        } catch { }
+    }
     public func download(_ url: URL, expectedSize: Int64, maximumSize: Int64, to destination: URL) async throws -> Int64 {
         guard url.scheme?.lowercased() == "https" else { throw BinaryUpdateError.invalidAsset("download URL is not HTTPS") }
+        let delegate = RedirectDelegate(log: log)
         var request = URLRequest(url: url); request.setValue("DFUUtility/0.10 binary-update", forHTTPHeaderField: "User-Agent")
         do {
-            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            let (bytes, response) = try await session.bytes(for: request)
             guard let http = response as? HTTPURLResponse else { throw BinaryUpdateError.network("non-HTTP response") }
             guard http.statusCode == 200 else { throw BinaryUpdateError.httpStatus(http.statusCode) }
-            guard let host = response.url?.host?.lowercased(), host == "github.com" || host == "objects.githubusercontent.com" else { throw BinaryUpdateError.invalidAsset("download redirected to an untrusted host") }
+            guard let finalURL = response.url, BinaryRedirectPolicy.allows(source: url, destination: finalURL) else { throw BinaryUpdateError.invalidAsset("download redirected to an untrusted host") }
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             FileManager.default.createFile(atPath: destination.path, contents: nil)
             let handle = try FileHandle(forWritingTo: destination); defer { try? handle.close() }
@@ -198,6 +230,22 @@ public struct URLSessionBinaryUpdateNetworking: BinaryUpdateNetworking {
         } catch let error as BinaryUpdateError { try? FileManager.default.removeItem(at: destination); throw error }
         catch is CancellationError { try? FileManager.default.removeItem(at: destination); throw BinaryUpdateError.cancelled }
         catch { try? FileManager.default.removeItem(at: destination); throw BinaryUpdateError.network(error.localizedDescription) }
+    }
+
+    private final class RedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        let log: (@Sendable (String) -> Void)?
+        var redirects = 0
+        init(log: (@Sendable (String) -> Void)?) { self.log = log }
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            redirects += 1
+            guard redirects <= BinaryRedirectPolicy.maximumRedirects, let source = task.currentRequest?.url, let destination = request.url,
+                  BinaryRedirectPolicy.allows(source: source, destination: destination) else {
+                log?(BinaryRedirectPolicy.logMessage(source: task.currentRequest?.url, destination: request.url, accepted: false))
+                completionHandler(nil); return
+            }
+            log?(BinaryRedirectPolicy.logMessage(source: source, destination: destination, accepted: true))
+            completionHandler(request)
+        }
     }
 }
 

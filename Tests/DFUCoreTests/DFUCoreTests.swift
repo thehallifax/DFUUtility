@@ -1037,3 +1037,17 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
     #expect(try releaseLibrary("dirty_tree_outcome development").1 == "WARN")
     #expect(try releaseLibrary("dirty_tree_outcome strict").1 == "FAIL")
 }
+
+@Test func githubReleaseAssetRedirectPolicyIsExactAndHTTPSOnly() {
+    let source = URL(string: "https://github.com/thehallifax/DFUUtility/releases/download/v0.10.2/DFUUtility-0.10.2.zip")!
+    #expect(BinaryRedirectPolicy.allows(source: source, destination: URL(string: "https://release-assets.githubusercontent.com/github-production-release-asset/file")!))
+    #expect(!BinaryRedirectPolicy.allows(source: source, destination: URL(string: "http://release-assets.githubusercontent.com/file")!))
+    #expect(!BinaryRedirectPolicy.allows(source: source, destination: URL(string: "https://release-assets.githubusercontent.com.evil.example/file")!))
+    #expect(!BinaryRedirectPolicy.allows(source: source, destination: URL(string: "https://evil-release-assets.githubusercontent.com/file")!))
+    #expect(!BinaryRedirectPolicy.allows(source: source, destination: URL(string: "https://127.0.0.1/file")!))
+    #expect(!BinaryRedirectPolicy.allows(source: source, destination: URL(string: "https://user:secret@release-assets.githubusercontent.com/file")!))
+    #expect(!BinaryRedirectPolicy.allows(source: source, destination: URL(string: "https://release-assets.githubusercontent.com:8443/file")!))
+    let logged = BinaryRedirectPolicy.logMessage(source: source, destination: URL(string: "https://release-assets.githubusercontent.com/file?token=secret.jwt")!, accepted: true)
+    #expect(logged.contains("github.com") && logged.contains("release-assets.githubusercontent.com"))
+    #expect(!logged.contains("token") && !logged.contains("secret.jwt") && !logged.contains("?"))
+}
