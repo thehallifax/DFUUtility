@@ -237,6 +237,7 @@ private struct BinaryHTTPFixture: HTTPDataFetching {
     await coordinator.check(manual: true)
     app.isUpdatePresentationRequested = true
     #expect(app.prepareUpdate())
+    for _ in 0..<10 where terminator.calls == 0 { await Task.yield() }
     #expect(box.recordedEvents == ["launch", "terminate"])
     #expect(terminator.calls == 1); #expect(!app.isUpdatePresentationRequested)
     #expect(coordinator.state == .preparing)

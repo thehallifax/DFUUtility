@@ -368,7 +368,8 @@ public final class AppModel: ObservableObject {
         guard canStartUpdate else { presentedError = updateBlockedMessage; return false }
         do {
             try updateCoordinator.installVerifiedBinaryUpdate(operationAllowed: canStartUpdate)
-            applicationTerminator.requestTermination()
+            isUpdatePresentationRequested = false
+            requestTerminationAfterUpdatePresentationDismisses()
             return true
         } catch {
             presentedError = error.localizedDescription
@@ -514,10 +515,17 @@ public final class AppModel: ObservableObject {
             try updateCoordinator.launchUpdate()
             isUpdatePresentationRequested = false
             if updateCoordinator.isSimulation { completeUpdateTest() }
-            else { applicationTerminator.requestTermination() }
+            else { requestTerminationAfterUpdatePresentationDismisses() }
             return true
         }
         catch { presentedError = error.localizedDescription; return false }
+    }
+
+    private func requestTerminationAfterUpdatePresentationDismisses() {
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.applicationTerminator.requestTermination()
+        }
     }
 
     private func configureScreenshot(_ scenario: String) {

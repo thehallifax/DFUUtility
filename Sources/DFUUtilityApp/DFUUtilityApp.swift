@@ -4,23 +4,53 @@ import AppKit
 import SwiftUI
 
 @MainActor private final class AppKitApplicationTerminator: ApplicationTerminationRequesting {
-    func requestTermination() { NSApplication.shared.terminate(nil) }
+    func requestTermination() {
+        AppLifecycleTrace.write("termination request on main thread=\(Thread.isMainThread) pid=\(ProcessInfo.processInfo.processIdentifier)")
+        let sheets = NSApp.windows.filter { $0.sheetParent != nil || $0.attachedSheet != nil }
+        AppLifecycleTrace.write("termination request observed sheets=\(sheets.count) windows=\(NSApp.windows.count)")
+        for sheet in sheets {
+            sheet.sheetParent?.endSheet(sheet, returnCode: .cancel)
+        }
+        DispatchQueue.main.async {
+            AppLifecycleTrace.write("termination request dispatch reached")
+            NSApplication.shared.terminate(nil)
+        }
+    }
+}
+
+private enum AppLifecycleTrace {
+    static func write(_ message: String) {
+        FileHandle.standardError.write(Data("DFUUtility lifecycle: \(message)\n".utf8))
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+#if DEBUG
+    private var smokeModel: AppModel?
+    private var smokeWindow: NSWindow?
+#endif
     // SwiftUI's application lifecycle does not otherwise provide an explicit
     // termination reply. Returning terminateNow ensures the orderly
     // termination requested after a successful binary-installer handoff is
     // not left pending while the update sheet is being dismissed.
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { .terminateNow }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        AppLifecycleTrace.write("applicationShouldTerminate reply=terminateNow")
+        return .terminateNow
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AppLifecycleTrace.write("applicationWillTerminate")
         NSLog("DFUUtility applicationWillTerminate reached")
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+#if DEBUG
+        if CommandLine.arguments.contains("--handoff-termination-smoke-success") || CommandLine.arguments.contains("--handoff-termination-smoke-failure") {
+            Task { @MainActor in await self.runHandoffTerminationSmoke() }
+        }
+#endif
         if CommandLine.arguments.contains("--demo"),
            let index = CommandLine.arguments.firstIndex(of: "--capture-screenshot"),
            CommandLine.arguments.indices.contains(index + 1) {
@@ -33,6 +63,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+#if DEBUG
+    @MainActor private func runHandoffTerminationSmoke() async {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Handoff-Smoke-\(UUID().uuidString)", isDirectory: true)
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: source.appendingPathComponent(".git"), withIntermediateDirectories: true)
+            let sourceRecord = root.appendingPathComponent("update-source")
+            try source.path.write(to: sourceRecord, atomically: true, encoding: .utf8)
+            let failure = CommandLine.arguments.contains("--handoff-termination-smoke-failure")
+            let coordinator = UpdateCoordinator(service: SmokeUpdateService(failsToSpawn: failure), sourceRecordURL: sourceRecord, resultURL: root.appendingPathComponent("result"), logURL: root.appendingPathComponent("log"), defaults: UserDefaults(suiteName: "DFUUtility-Handoff-Smoke-\(UUID().uuidString)")!, appURL: root.appendingPathComponent("DFUUtility.app"), runningVersion: SemanticVersion(tag: "v0.10.0")!)
+            let model = AppModel(updateCoordinator: coordinator, applicationTerminator: AppKitApplicationTerminator(), requiresPrivilegedHelperSetup: false)
+            await coordinator.check(manual: true)
+            smokeModel = model
+            let window = NSWindow(contentViewController: NSHostingController(rootView: ContentView(model: model)))
+            window.setContentSize(NSSize(width: 700, height: 500))
+            window.makeKeyAndOrderFront(nil)
+            smokeWindow = window
+            model.isUpdatePresentationRequested = true
+            try? await Task.sleep(for: .milliseconds(500))
+            let started = model.prepareUpdate()
+            AppLifecycleTrace.write("synthetic handoff prepareUpdate returned=\(started)")
+            AppLifecycleTrace.write(failure ? "synthetic installer spawn failed; app remains running" : "synthetic installer spawn succeeded")
+        } catch {
+            AppLifecycleTrace.write("synthetic handoff setup failed: \(error.localizedDescription)")
+        }
+    }
+#endif
 
     @MainActor private func captureDemoScreenshot(scenario: String, at path: String) async {
         let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Screenshot-Cache"))
@@ -88,6 +146,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 }
+
+#if DEBUG
+private struct SmokeUpdateService: UpdateServicing {
+    let failsToSpawn: Bool
+    func check(sourceRoot: URL) async throws -> AppUpdateState {
+        .available(UpdateAvailability(currentVersion: "0.10.0", latestVersion: "0.10.1", currentCommit: "smoke-old", latestCommit: "smoke-new"))
+    }
+
+    func launch(sourceRoot: URL, oldPID: Int32, appURL: URL, resultURL: URL) throws {
+        if failsToSpawn {
+            AppLifecycleTrace.write("synthetic installer spawn failed")
+            throw UpdateServiceError.launchFailed("synthetic installer failure")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try process.run()
+        AppLifecycleTrace.write("synthetic installer spawn succeeded")
+    }
+}
+#endif
 
 @main
 struct DFUUtilityApplication: App {
