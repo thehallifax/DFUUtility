@@ -4,7 +4,7 @@ DFUUtility is an open-source native macOS utility for entering supported Macs in
 
 ![DFUUtility multi-device workflow](docs/images/multiple-devices.png)
 
-Version 0.10.0 is a Community release focused on technician workflows and a verified, transactional binary updater. Community builds are ad-hoc signed; no paid Apple Developer account is required, and no Developer ID publisher authentication or notarization is provided.
+Version 0.10.1 is a Community maintenance release focused on reliable updater installation provenance. Community builds are ad-hoc signed; no paid Apple Developer account is required, and no Developer ID publisher authentication or notarization is provided.
 
 ## Features
 
@@ -196,7 +196,7 @@ Apple Configurator's `cfgutil` remains required for device discovery, Restore, a
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.10.0 release notes](docs/RELEASE_NOTES_0.10.0.md), [0.9.0 release notes](docs/RELEASE_NOTES_0.9.0.md), and [0.7.0 release notes](docs/RELEASE_NOTES_0.7.0.md) for release history.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.10.1 release notes](docs/RELEASE_NOTES_0.10.1.md), [0.10.0 release notes](docs/RELEASE_NOTES_0.10.0.md), [0.9.0 release notes](docs/RELEASE_NOTES_0.9.0.md), and [0.7.0 release notes](docs/RELEASE_NOTES_0.7.0.md) for release history.
 
 ## License
 
