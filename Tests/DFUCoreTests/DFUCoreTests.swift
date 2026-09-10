@@ -849,10 +849,10 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
 }
 
 @Test func buildVersionAndDiagnosticsMetadataPropagate() throws {
-    #expect(BuildMetadata.displayVersion == "0.10.7 (1)")
+    #expect(BuildMetadata.displayVersion == "0.10.8 (1)")
     #expect(BuildMetadata.helperProtocolVersion == 1)
     let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .signedHelper, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
-    #expect(text.contains("App version: 0.10.7 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+    #expect(text.contains("App version: 0.10.8 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
     #expect(text.contains("Helper registration signing: Unsupported"))
 }
 
@@ -931,7 +931,7 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
 
 @Test func releaseCheckParsesVersionAndRejectsMalformedMetadata() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.10.7")
+    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.10.8")
     let malformed = try temporaryDirectory().appendingPathComponent("Version.env"); try Data("MARKETING_VERSION=bad!\n".utf8).write(to: malformed)
     #expect(try releaseLibrary("validate_version_metadata \"\(malformed.path)\"").0 != 0)
     #expect(try releaseLibrary("metadata_value /definitely/missing MARKETING_VERSION").0 != 0)
