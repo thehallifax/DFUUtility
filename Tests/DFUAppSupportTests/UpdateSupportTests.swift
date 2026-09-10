@@ -262,3 +262,16 @@ private struct BinaryHTTPFixture: HTTPDataFetching {
     #expect(app.prepareUpdate())
     #expect(terminator.calls == 0); #expect(coordinator.pendingResult?.isSimulation == true)
 }
+
+@Test func appDelegateProvidesDeterministicTerminationReplyForBinaryHandoff() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/DFUUtilityApp/DFUUtilityApp.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    #expect(source.contains("func applicationShouldTerminate"))
+    #expect(source.contains("NSApplication.TerminateReply"))
+    #expect(source.contains(".terminateNow"))
+    #expect(source.contains("func applicationWillTerminate"))
+}

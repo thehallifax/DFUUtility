@@ -8,6 +8,16 @@ import SwiftUI
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    // SwiftUI's application lifecycle does not otherwise provide an explicit
+    // termination reply. Returning terminateNow ensures the orderly
+    // termination requested after a successful binary-installer handoff is
+    // not left pending while the update sheet is being dismissed.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { .terminateNow }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        NSLog("DFUUtility applicationWillTerminate reached")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
