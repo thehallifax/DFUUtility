@@ -54,6 +54,7 @@ install -m 644 Packaging/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 install -m 644 LICENSE "$app/Contents/Resources/DFUUtility-LICENSE.txt"
 install -m 644 Vendor/macvdmtool/LICENSE "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt"
 install -m 644 Vendor/macvdmtool/UPSTREAM_REVISION "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt"
+install -m 644 Vendor/macvdmtool/README.upstream.md "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM-NOTICE.md"
 install -m 755 scripts/update-and-relaunch.sh "$app/Contents/Resources/update-and-relaunch.sh"
 
 plutil -create xml1 "$app/Contents/Info.plist"

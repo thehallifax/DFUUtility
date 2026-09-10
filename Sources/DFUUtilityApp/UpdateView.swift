@@ -71,7 +71,7 @@ struct UpdateView: View {
         case .binaryAvailable(let update):
             Text(verbatim: "DFUUtility \(update.version.description) is available.")
             if let url = update.releaseURL { Link("View release notes", destination: url) }
-            Text("Download the verified Community release into DFUUtility's controlled staging area. Installation is not performed in this version.").font(.caption).foregroundStyle(.secondary)
+            Text("Download the verified Community release into DFUUtility's controlled staging area. Installation remains a separate explicit action.").font(.caption).foregroundStyle(.secondary)
         case .verifiedReady(let artifact):
             Label { Text(verbatim: "DFUUtility \(artifact.version.description) is verified and ready to install.") } icon: { Image(systemName: "checkmark.seal") }
             Text("Community release verified against published release metadata and bundle structure.").font(.caption).foregroundStyle(.secondary)

@@ -48,6 +48,21 @@ privileged updater or sudo-based escalation is used; a non-writable location
 fails with a permission error. Source/Git updating remains isolated and never
 invokes the binary transaction helper.
 
+## Production acceptance
+
+The complete Community binary updater lifecycle was production accepted for
+`0.10.9 → 0.10.10`. Acceptance covered GitHub Release discovery, legitimate
+GitHub asset redirects, asset download and SHA-256 verification, explicit
+Download Update and Install Update actions, update-sheet dismissal,
+external-installer handoff, originating-process termination and bounded PID
+waiting, transactional replacement, rollback protections, destination
+validation, and relaunch verification using a distinct `0.10.10` process.
+
+Source-checkout updates and binary-distribution updates remain separate
+workflows. This acceptance applies to the Community binary updater only; it
+does not claim Developer ID distribution, publisher authentication, or
+notarization. Community artifacts remain ad-hoc signed.
+
 ## Local installer acceptance harness
 
 The packaged helper can be exercised without touching an installed application:

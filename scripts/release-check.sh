@@ -100,7 +100,7 @@ else
 fi
 
 app="$root/.build/app/DFUUtility.app"
-components="Contents/MacOS/DFUUtility Contents/Library/LaunchServices/DFUPrivilegedHelper Contents/Library/LaunchDaemons/org.dfuutility.privileged-helper.plist Contents/Resources/DFUBinaryInstaller Contents/Resources/AppIcon.icns Contents/Resources/DFUUtility-LICENSE.txt Contents/Resources/macvdmtool Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt"
+components="Contents/MacOS/DFUUtility Contents/Library/LaunchServices/DFUPrivilegedHelper Contents/Library/LaunchDaemons/org.dfuutility.privileged-helper.plist Contents/Resources/DFUBinaryInstaller Contents/Resources/AppIcon.icns Contents/Resources/DFUUtility-LICENSE.txt Contents/Resources/macvdmtool Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM-NOTICE.md"
 missing=""
 for component in $components; do [ -e "$app/$component" ] || missing="$missing $component"; done
 if [ -z "$missing" ]; then pass "Bundle structure"; else fail "Bundle structure" "missing:$missing"; fi
@@ -124,13 +124,13 @@ packaged_icon=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Conte
 if [ "$packaged_version" = "$version" ] && [ "$packaged_build" = "$build" ] && [ "$packaged_protocol" = "$helper_protocol" ] && [ "$packaged_icon" = AppIcon ]; then pass "Packaged metadata"; else fail "Packaged metadata" "Info.plist mismatch"; fi
 
 if [ -s LICENSE ] && grep -Fq "Apache License" LICENSE && [ -s "$app/Contents/Resources/DFUUtility-LICENSE.txt" ]; then pass "Project license" "Apache License 2.0"; else fail "Project license" "project Apache-2.0 license missing from source or app bundle"; fi
-if [ -s Vendor/macvdmtool/LICENSE ] && [ -s Vendor/macvdmtool/UPSTREAM_REVISION ] && [ -s Vendor/macvdmtool/README.upstream.md ] && grep -Fq "$vdm_revision" Vendor/macvdmtool/UPSTREAM_REVISION && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt" ] && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt" ]; then pass "Third-party licenses"; else fail "Third-party licenses" "macvdmtool attribution/license/revision incomplete"; fi
+if [ -s Vendor/macvdmtool/LICENSE ] && [ -s Vendor/macvdmtool/UPSTREAM_REVISION ] && [ -s Vendor/macvdmtool/README.upstream.md ] && grep -Fq "$vdm_revision" Vendor/macvdmtool/UPSTREAM_REVISION && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-Apache-2.0.txt" ] && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM_REVISION.txt" ] && [ -s "$app/Contents/Resources/ThirdPartyLicenses/macvdmtool-UPSTREAM-NOTICE.md" ]; then pass "Third-party licenses"; else fail "Third-party licenses" "macvdmtool attribution/license/revision incomplete"; fi
 
 screenshots_ok=true
-for screenshot in multiple-devices normal-mac mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
+for screenshot in multiple-devices normal-mac firmware-library device-capture-default diagnostics about update mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
   [ -s "$root/docs/images/$screenshot.png" ] || screenshots_ok=false
 done
-if [ "$screenshots_ok" = true ]; then pass "Release screenshots" "10 deterministic assets"; else fail "Release screenshots" "one or more release screenshots are missing"; fi
+if [ "$screenshots_ok" = true ]; then pass "Release screenshots" "16 deterministic assets"; else fail "Release screenshots" "one or more release screenshots are missing"; fi
 
 artifact="$root/.build/distribution/$(distribution_artifact_name "$version")"
 if [ -f "$artifact" ] && unzip -Z1 "$artifact" >"$log_root/zip-contents.log" 2>&1 && grep -q '^DFUUtility.app/Contents/MacOS/DFUUtility$' "$log_root/zip-contents.log" && grep -q '^DFUUtility.app/Contents/Library/LaunchServices/DFUPrivilegedHelper$' "$log_root/zip-contents.log"; then

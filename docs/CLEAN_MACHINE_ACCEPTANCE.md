@@ -27,6 +27,13 @@ If macvdmtool reports that it did not receive the final VDM reply after reaching
 
 ## Upgrade acceptance
 
+The production Community binary updater lifecycle was subsequently accepted
+end-to-end for `0.10.9 → 0.10.10`, including verified release download,
+explicit installation, originating-process handoff, transactional replacement,
+rollback safeguards, and distinct-process relaunch verification. This is
+separate from the source-checkout updater workflow. Community artifacts remain
+ad-hoc signed and are not Developer ID authenticated or notarized.
+
 1. With v1 registered, quit v1 and replace `/Applications/DFUUtility.app` with a same-Team signed v2.
 2. Launch v2. Confirm a matching helper remains ready, or an older protocol is explicitly reported as requiring upgrade.
 3. Run setup when prompted. Confirm the old service is unregistered/replaced and the new version/protocol responds.

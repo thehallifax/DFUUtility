@@ -4,7 +4,9 @@ DFUUtility is an open-source native macOS utility for entering supported Macs in
 
 ![DFUUtility multi-device workflow](docs/images/multiple-devices.png)
 
-Version 0.10.1 is a Community maintenance release focused on reliable updater installation provenance. Community builds are ad-hoc signed; no paid Apple Developer account is required, and no Developer ID publisher authentication or notarization is provided.
+Community releases are ad-hoc signed. No paid Apple Developer account is
+required, but Community builds do not provide Developer ID publisher
+authentication or notarization.
 
 ## Features
 
@@ -71,6 +73,34 @@ All screenshots use deterministic fictional data; they contain no real device or
 
 Requirements: macOS 14 or newer, [Apple Configurator](https://apps.apple.com/app/apple-configurator/id1037126344), a data-capable cable, and internet access for automatic firmware downloads. The current Mac DFU workflow requires an Apple Silicon host. Administrator authorization is requested only when entering a Mac into DFU.
 
+### End-user installation
+
+1. Open the [latest DFUUtility GitHub Release](https://github.com/thehallifax/DFUUtility/releases).
+2. Download the `DFUUtility-<version>.zip` asset.
+3. Unzip it and move `DFUUtility.app` to `/Applications`.
+4. Launch DFUUtility.
+
+Community ZIPs are ad-hoc signed and are not notarized. macOS may show its
+standard confirmation for an app downloaded from the internet.
+
+### Updating
+
+For a packaged installation, choose **DFUUtility → Check for Updates…**.
+Updates are always explicit:
+
+**Check for Updates… → Download Update → Install Update**
+
+DFUUtility verifies the published release metadata, download size, SHA-256,
+archive structure, bundle identity/version/resources, and structural code
+signature before offering installation. The replacement is transactional and
+the app relaunches only after the installed destination has been verified.
+The production binary updater lifecycle was accepted for `0.10.9 → 0.10.10`;
+Community artifacts remain ad-hoc signed and not notarized.
+
+### Developer/source installation
+
+Developers can build a source installation from a persistent clean Git clone:
+
 ```sh
 git clone https://github.com/thehallifax/DFUUtility.git
 cd DFUUtility
@@ -92,11 +122,16 @@ scripts/install-local.sh --verbose
 scripts/install-local.sh --test --verbose
 ```
 
-### Updating
+### Source-checkout updates
 
-DFUUtility normally performs a lightweight daily check for newer Community source after launch. It never installs automatically. Choose **DFUUtility → Check for Updates…** to perform a fresh check; **Update Now** quits the running app, safely fast-forwards its original Git clone, rebuilds and verifies the app locally, installs it, and relaunches it. The original checkout must still exist, remain on `main`, and have no local changes.
+For a source installation, **DFUUtility → Check for Updates…** checks the
+original clean Git checkout. **Update Now** safely fast-forwards that checkout,
+rebuilds and verifies the app locally, installs it, and relaunches it. The
+original checkout must still exist, remain on `main`, and have no local changes.
 
-For a normal copied/binary installation, the same check uses the published stable GitHub Release metadata, even if an older source-install registration remains on the machine. Distribution bundles carry explicit installation provenance; source installs retain the Git updater. It never downloads or installs automatically. When a newer release is available, choose **Download Update** explicitly; DFUUtility stages the ZIP in its private Application Support update area, verifies its size, SHA-256 digest, archive paths, bundle identity/version/resources, and structural signature, then stops at **Verified update ready to install**. **Install Update** performs the separate transactional replacement after the application has been explicitly authorized to quit.
+Distribution bundles use GitHub Release metadata instead, even if an older
+source-install registration remains on the machine. Installation provenance
+keeps these workflows separate.
 
 The installer records the canonical source location in the user's DFUUtility application-support folder; no developer path is embedded in the app. Update progress and failures are recorded in `~/Library/Logs/DFUUtility/update.log`. A failed build or verification leaves the existing installed app available.
 
@@ -176,7 +211,7 @@ swift build -c release
 
 Explicit hardware commands are `.build/release/dfuctl dfu`, `.build/release/dfuctl revive`, and `.build/release/dfuctl restore /path/to/Restore.ipsw`. Restore is destructive. The CLI's safe privilege behavior is documented in [Privileged helper architecture](docs/PRIVILEGED_HELPER.md).
 
-## Build from source
+## Build and test from source
 
 ```sh
 swift build
@@ -196,7 +231,7 @@ Apple Configurator's `cfgutil` remains required for device discovery, Restore, a
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. See the [0.10.1 release notes](docs/RELEASE_NOTES_0.10.1.md), [0.10.0 release notes](docs/RELEASE_NOTES_0.10.0.md), [0.9.0 release notes](docs/RELEASE_NOTES_0.9.0.md), and [0.7.0 release notes](docs/RELEASE_NOTES_0.7.0.md) for release history.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused development and privacy-safe issue reporting. Read the [0.10.10 release notes](docs/RELEASE_NOTES_0.10.10.md), [0.9.0 release notes](docs/RELEASE_NOTES_0.9.0.md), and [0.10.0 binary updater notes](docs/RELEASE_NOTES_0.10.0.md) for key milestones. The accepted updater workflow is documented in [Binary update architecture](docs/BINARY_UPDATE_ARCHITECTURE.md). Browse the [complete GitHub Release history](https://github.com/thehallifax/DFUUtility/releases) for all published artifacts.
 
 ## License
 

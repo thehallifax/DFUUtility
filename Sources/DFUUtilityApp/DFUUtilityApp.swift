@@ -94,7 +94,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor private func captureDemoScreenshot(scenario: String, at path: String) async {
         let cache = IPSWCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("DFUUtility-Screenshot-Cache"))
-        let model = AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: cache, diagnostics: DemoDiagnostics(), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), isDemoMode: true, screenshotScenario: scenario)
+        #if DEBUG
+        let screenshotUpdateCoordinator = scenario == "update" ? UpdateCoordinator.simulated() : nil
+        #else
+        let screenshotUpdateCoordinator: UpdateCoordinator? = nil
+        #endif
+        let model = AppModel(ipswService: DemoIPSWService(), discovery: DemoDiscovery(), cache: cache, diagnostics: DemoDiagnostics(), restoreEngine: DemoRestoreEngine(), dfuController: DemoDFUController(), updateCoordinator: screenshotUpdateCoordinator, isDemoMode: true, screenshotScenario: scenario)
         await model.load()
         let root: AnyView
         let size: NSSize
@@ -125,6 +130,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if scenario == "diagnostics" || scenario == "firmware-library" {
             root = AnyView(ContentView(model: model))
             size = NSSize(width: 1040, height: 800)
+        } else if scenario == "about" {
+            root = AnyView(AboutView())
+            size = NSSize(width: 620, height: 620)
+        } else if scenario == "update" {
+            #if DEBUG
+            await screenshotUpdateCoordinator?.check(manual: true)
+            #endif
+            root = AnyView(UpdateView(model: model))
+            size = NSSize(width: 560, height: 420)
         } else {
             root = AnyView(ContentView(model: model))
             size = NSSize(width: 900, height: 760)

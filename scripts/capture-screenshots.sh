@@ -5,7 +5,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 swift build --product DFUUtility
 
-for scenario in multiple-devices normal-mac mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
+for scenario in multiple-devices normal-mac firmware-library device-capture-default diagnostics about update mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
   destination="$root/docs/images/$scenario.png"
   rm -f "$destination"
   .build/debug/DFUUtility --demo --screenshot "$scenario" --capture-screenshot "$destination"
@@ -20,4 +20,4 @@ for scenario in multiple-devices normal-mac mac-dfu iphone-guided-dfu ipad-guide
   done
 done
 
-echo "Generated 10 deterministic screenshots in docs/images."
+echo "Generated 16 deterministic screenshots in docs/images."
