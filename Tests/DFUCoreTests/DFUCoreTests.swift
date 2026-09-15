@@ -189,12 +189,13 @@ private final class CapturingValidator: @unchecked Sendable, IPSWValidating {
 
 @Test func cfgutilDiscoveryClassifiesMacIPhoneAndIPad() throws {
     func details(_ deviceClass: String, _ product: String, _ state: String, _ ecid: String) -> CommandResult {
-        result("{\"ECID\":\"\(ecid)\",\"deviceClass\":\"\(deviceClass)\",\"deviceType\":\"\(product)\",\"bootedState\":\"\(state)\",\"UDID\":\"SYNTHETIC-\(ecid)\",\"serialNumber\":\"SERIAL-REDACTED\"}")
+        result("{\"ECID\":\"\(ecid)\",\"deviceClass\":\"\(deviceClass)\",\"deviceType\":\"\(product)\",\"bootedState\":\"\(state)\",\"isSupervised\":\"\(deviceClass == "iPhone" ? "true" : "false")\",\"UDID\":\"SYNTHETIC-\(ecid)\",\"serialNumber\":\"SERIAL-REDACTED\"}")
     }
     let runner = SequenceCommandRunner([result("{\"Devices\":[\"1\",\"2\",\"3\"]}"), details("Mac", "Mac14,2", "Booted", "1"), details("iPhone", "iPhone15,2", "Recovery", "2"), details("iPad", "iPad13,18", "DFU", "3")])
     let devices = try ConfiguratorDeviceDiscovery(runner: runner, cfgutil: URL(fileURLWithPath: "/cfgutil")).devices()
     #expect(devices.map(\.family) == [.mac, .iPhone, .iPad]); #expect(devices.map(\.state) == [.normal, .recovery, .dfu])
     #expect(devices[1].restoreProductType == "iPhone15,2"); #expect(devices[1].serialNumber == "SERIAL-REDACTED")
+    #expect(devices.map(\.isSupervised) == [false, true, false])
 }
 
 @Test func cfgutilDiscoveryNormalizesIdentifierKeyCasing() throws {
@@ -409,8 +410,41 @@ private func mobileRestoreCommand(family: AppleDeviceFamily, state: DeviceState,
     let engine = RestoreEngine(discovery: FixedRestoreDiscovery(values: [target]), runner: SequenceCommandRunner([]), cfgutil: URL(fileURLWithPath: "/cfgutil"))
     let revive = try engine.command(for: .targetedRevive(ecid: "PHONE"))
     #expect(revive.1 == ["--progress", "--verbose", "--timeout", "30", "--ecid", "PHONE", "revive"])
-    let restart = try engine.command(for: .targetedReboot(ecid: "PHONE"))
+    #expect(throws: DFUError.self) { try engine.command(for: .targetedReboot(ecid: "PHONE")) }
+    let supervised = DFUDevice(family: .iPhone, state: .normal, ecid: "PHONE", productType: "iPhone15,2", isSupervised: true)
+    let restart = try RestoreEngine(discovery: FixedRestoreDiscovery(values: [supervised]), runner: SequenceCommandRunner([]), cfgutil: URL(fileURLWithPath: "/cfgutil")).command(for: .targetedReboot(ecid: "PHONE"))
     #expect(restart.1 == ["--progress", "--verbose", "--timeout", "30", "--ecid", "PHONE", "restart"])
+}
+
+@Test func mobileRestartRequiresPositiveSupervisedNormalEvidence() throws {
+    for state in [DeviceState.recovery, .dfu] {
+        let target = DFUDevice(family: .iPad, state: state, ecid: "PAD", productType: "iPad11,6", isSupervised: true)
+        #expect(RestartTargetStatePolicy.failureMessage(for: target)?.contains(state.rawValue) == true)
+    }
+    let unknown = DFUDevice(family: .iPad, state: .normal, ecid: "PAD", productType: "iPad11,6")
+    #expect(RestartTargetStatePolicy.failureMessage(for: unknown)?.contains("supervised") == true)
+    let supervised = DFUDevice(family: .iPad, state: .normal, ecid: "PAD", productType: "iPad11,6", isSupervised: true)
+    #expect(RestartTargetStatePolicy.failureMessage(for: supervised) == nil)
+    #expect(RestartTargetStatePolicy.failureMessage(for: DFUDevice(family: .mac, state: .recovery, ecid: "MAC")) == nil)
+}
+
+@Test func appleCatalogueRetainsExactProductPreviousReleasesWithoutClaimingSigning() async throws {
+    let latestURL = URL(string: "https://updates.cdn-apple.com/iPad11-6-latest.ipsw")!
+    let previousURL = URL(string: "https://updates.cdn-apple.com/iPad11-6-previous.ipsw")!
+    let plist: [String: Any] = ["MobileDeviceSoftwareVersionsByVersion": ["17": ["MobileDeviceSoftwareVersions": [
+        "iPad11,6": [
+            "24A1": ["Restore": ["FirmwareURL": latestURL.absoluteString, "FirmwareSHA1": "latest", "ProductVersion": "27.0", "BuildVersion": "24A1"]],
+            "23H1": ["Restore": ["FirmwareURL": previousURL.absoluteString, "FirmwareSHA1": "previous", "ProductVersion": "26.7", "BuildVersion": "23H1"]]
+        ],
+        "iPad13,18": ["24A1": ["Restore": ["FirmwareURL": "https://updates.cdn-apple.com/other.ipsw", "FirmwareSHA1": "other", "ProductVersion": "27.0", "BuildVersion": "24A1"]]],
+        "iPhone15,2": ["24A1": ["Restore": ["FirmwareURL": "https://updates.cdn-apple.com/phone.ipsw", "FirmwareSHA1": "phone", "ProductVersion": "27.0", "BuildVersion": "24A1"]]]
+    ]]]]
+    let parsed = try AppleMobileIPSWCatalogue.parse(PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0))
+    let service = AppleIPSWService(catalogue: MockCatalogue(), mobileCatalogue: MockCatalogue(parsed), downloader: MockDownloader(), cache: IPSWCache(directory: try temporaryDirectory()), validator: AcceptValidator())
+    let compatible = try await service.availableImages(for: DFUDevice(family: .iPad, state: .recovery, productType: "iPad11,6"))
+    #expect(compatible.map(\.version) == ["27.0", "26.7"])
+    #expect(compatible.allSatisfy { $0.supportedDevices == ["iPad11,6"] })
+    #expect(compatible.allSatisfy { $0.signingStatus == .appleCatalogue && $0.isSigned == nil })
 }
 
 @Test func mobileRestoreStillRequiresProductCompatibilityAndSingleTarget() throws {
@@ -965,10 +999,15 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
             let productType, observationDate, restoreImage, scopeNote: String
             let results: Results
         }
+        struct CurrentIPhoneHardware: Decodable {
+            struct Results: Decodable { let ecidTargeting, downloadedValidatedFirmware, recoveryRestoreReadiness, guiRestore, historicalFirmwareRestore: String }
+            let displayName, productType, observationDate, restoreImage, scopeNote: String
+            let results: Results
+        }
         let appVersion, distributionMode, acceptanceDate: String
         let hardware: Hardware; let results: Results; let mobileHardware: MobileHardware; let iPadHardware: IPadHardware
         let newerMacHardware: NewerMacHardware; let multiDeviceHardware: MultiDeviceHardware
-        let mobileCachedFirmwareAssignment: MobileCachedFirmwareAssignment
+        let mobileCachedFirmwareAssignment: MobileCachedFirmwareAssignment; let currentIPhoneHardware: CurrentIPhoneHardware
     }
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let value = try JSONDecoder().decode(Acceptance.self, from: Data(contentsOf: root.appendingPathComponent("Config/HardwareAcceptance.json")))
@@ -1000,6 +1039,11 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
     #expect(value.mobileCachedFirmwareAssignment.restoreImage.contains("26.6.1 / 23G83"))
     #expect([value.mobileCachedFirmwareAssignment.results.exactCompatibleAssetAssigned, value.mobileCachedFirmwareAssignment.results.validatedManagedCacheReused, value.mobileCachedFirmwareAssignment.results.deviceRemainedUnselected, value.mobileCachedFirmwareAssignment.results.recoveryRestoreReadiness, value.mobileCachedFirmwareAssignment.results.explicitOperationSelectionRequired].allSatisfy { $0 == "PASS" })
     #expect(value.mobileCachedFirmwareAssignment.scopeNote.contains("No automatic download or Restore occurred"))
+    #expect(value.currentIPhoneHardware.displayName == "iPhone 15"); #expect(value.currentIPhoneHardware.productType == "iPhone15,4")
+    #expect(value.currentIPhoneHardware.restoreImage.contains("27.0 / 24A437"))
+    #expect([value.currentIPhoneHardware.results.ecidTargeting, value.currentIPhoneHardware.results.downloadedValidatedFirmware, value.currentIPhoneHardware.results.recoveryRestoreReadiness, value.currentIPhoneHardware.results.guiRestore].allSatisfy { $0 == "PASS" })
+    #expect(value.currentIPhoneHardware.results.historicalFirmwareRestore == "PENDING")
+    #expect(value.currentIPhoneHardware.scopeNote.contains("does not establish historical"))
     let releaseCheck = try String(contentsOf: root.appendingPathComponent("scripts/release-check.sh"), encoding: .utf8)
     #expect(releaseCheck.contains("pass \"Hardware acceptance\"")); #expect(releaseCheck.contains("pass \"iPhone acceptance\"")); #expect(releaseCheck.contains("pass \"iPad acceptance\""))
     #expect(releaseCheck.contains("pass \"Newer Mac acceptance\"")); #expect(releaseCheck.contains("pass \"Multi-device acceptance\"")); #expect(releaseCheck.contains("pass \"Mobile cache assignment\""))
@@ -1024,6 +1068,14 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
     #expect(text.contains("+5.370 s")); #expect(text.contains("+6.438 s")); #expect(text.contains("+17.170 s"))
     #expect(text.contains("Same-ECID verification: PASS")); #expect(text.contains("Restore initiated: No"))
     #expect(!text.contains("Recovery detected")); #expect(!text.contains("Restore completed")); #expect(!text.contains("Users/")); #expect(!text.localizedCaseInsensitiveContains("hallifax"))
+}
+
+@Test func sanitizedIPhone154RecoveryRestoreFixtureRecordsOnlyCurrentFirmwareAcceptance() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let text = try String(contentsOf: root.appendingPathComponent("Tests/Fixtures/iphone15,4-recovery-restore-success.txt"), encoding: .utf8)
+    #expect(text.contains("iPhone15,4")); #expect(text.contains("iOS 27.0 / 24A437")); #expect(text.contains("0x1234567890ABCDEF"))
+    #expect(text.contains("ECID targeting: PASS")); #expect(text.contains("Firmware downloaded and validated: PASS")); #expect(text.contains("Recovery Restore readiness: PASS")); #expect(text.contains("Restore executed: PASS"))
+    #expect(text.contains("Historical firmware Restore: Not tested")); #expect(!text.contains("Users/")); #expect(!text.localizedCaseInsensitiveContains("hallifax"))
 }
 
 @Test func releaseCheckArtifactIdentitySignatureAndResults() throws {

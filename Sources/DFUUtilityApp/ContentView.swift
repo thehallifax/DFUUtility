@@ -22,6 +22,7 @@ struct ContentView: View {
     @State private var firmwareChooserSessionID: DeviceSessionID?
     @State private var demoTarget = "None"
     @State private var destination: SidebarDestination? = .restoreRevive
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var confirmingSingleRestore = false
 
     init(model: AppModel) {
@@ -31,7 +32,10 @@ struct ContentView: View {
 
     var body: some View {
         navigationRoot
-        .frame(minWidth: 920, minHeight: 620)
+        .frame(
+            minWidth: MainWindowConfiguration.standard.minimumWidth,
+            minHeight: MainWindowConfiguration.standard.minimumHeight
+        )
         .task {
             await model.load()
             if model.screenshotPresentationScenario?.hasPrefix("device-capture") == true {
@@ -88,8 +92,20 @@ struct ContentView: View {
                 workspace.frame(maxWidth: .infinity)
             }
         } else {
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
                 sidebar
+                    // Give the sidebar content a real intrinsic minimum in
+                    // addition to the NavigationSplitView column preference.
+                    // This prevents the detail column from compressing it
+                    // during live window resize.
+                    .frame(minWidth: MainWindowConfiguration.standard.sidebarMinimumWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(SidebarSplitWidthGuard(
+                        minimum: MainWindowConfiguration.standard.sidebarMinimumWidth,
+                        ideal: MainWindowConfiguration.standard.sidebarIdealWidth,
+                        maximum: MainWindowConfiguration.standard.sidebarMaximumWidth,
+                        visibility: String(describing: columnVisibility)
+                    ))
                     .navigationSplitViewColumnWidth(
                         min: MainWindowConfiguration.standard.sidebarMinimumWidth,
                         ideal: MainWindowConfiguration.standard.sidebarIdealWidth,
@@ -320,7 +336,7 @@ struct ContentView: View {
                             if !model.canRevive && session.device.state != .normal { Text("Revive is unavailable in the current device state.").font(.caption).foregroundStyle(.secondary) }
                             if !model.canRestart { Text(model.restartUnavailableMessage).font(.caption).foregroundStyle(.secondary) }
                             if model.macDFUInProgress { Text(AppModel.accessoryDFUGuidance).font(.callout) }
-                            OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: session.selectedRelease?.version, platform: session.device.family.restorePlatform), target: session.device)
+                            OperationProgressView(presentation: OperationProgressPresentation(state: model.operationPresentationState(for: session), macOSVersion: session.selectedRelease?.version, platform: session.device.family.restorePlatform), target: session.device)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -459,6 +475,7 @@ struct ContentView: View {
             if let release = session.selectedRelease {
                 Text("\(release.platform.displayName) \(release.version)").font(.title3.bold())
                 LabeledContent("Build", value: release.build)
+                Text(release.signingPresentation).font(.caption).foregroundStyle(.secondary)
                 Label(session.firmwareState == .validated ? "Downloaded and validated" : "Selected; download and validation required", systemImage: session.firmwareState == .validated ? "checkmark.circle.fill" : "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(session.firmwareState == .validated ? .green : .secondary)
             } else if let url = session.selectedImageURL {
@@ -467,14 +484,20 @@ struct ContentView: View {
             } else {
                 Text("No firmware chosen").foregroundStyle(.secondary)
             }
-            Button(session.selectedRelease == nil && session.selectedImageURL == nil ? "Choose Firmware…" : "Choose Different Firmware…") {
-                Task {
-                    await model.prepareFirmwareChooser(for: session.id)
-                    firmwareChooserSessionID = session.id
-                    showVersions = true
+            HStack {
+                Button(session.selectedRelease == nil && session.selectedImageURL == nil ? "Choose Firmware…" : "Choose Different Firmware…") {
+                    Task {
+                        await model.prepareFirmwareChooser(for: session.id)
+                        firmwareChooserSessionID = session.id
+                        showVersions = true
+                    }
+                }
+                .help("Choose compatible firmware specifically for this device.")
+                if session.selectedRelease != nil && session.firmwareState != .validated {
+                    Button("Download Firmware") { model.beginFirmwareDownload(for: session.id) }
+                        .disabled(!model.canDownloadFirmware(for: session.id))
                 }
             }
-            .help("Choose compatible firmware specifically for this device.")
         }
     }
 
@@ -517,7 +540,7 @@ struct ContentView: View {
                 if includeBatch && model.showsSessionPresentation { BatchRestoreControls(model: model, sessions: model.deviceSessions, coordinator: model.batchCoordinator) }
                 if includeBatch && (model.target != nil || model.macDFUInProgress) {
                     if model.macDFUInProgress { Text(AppModel.accessoryDFUGuidance).font(.callout) }
-                    OperationProgressView(presentation: OperationProgressPresentation(state: model.restoreState, macOSVersion: model.detailedSession?.selectedRelease?.version, platform: model.targetRestorePlatform), target: model.target)
+                    OperationProgressView(presentation: OperationProgressPresentation(state: model.operationPresentationState(for: model.detailedSession), macOSVersion: model.detailedSession?.selectedRelease?.version, platform: model.targetRestorePlatform), target: model.target)
                     Text("Restore erases the target device.").font(.caption.bold()).foregroundStyle(.secondary)
                     if model.canRevive { Text("Revive attempts repair without erasing recoverable user data, but is not a backup or guarantee.").font(.caption).foregroundStyle(.secondary) }
                 }
@@ -593,6 +616,170 @@ struct ContentView: View {
     }
 }
 
+/// NavigationSplitView widths are preferences on macOS, and an older AppKit
+/// split position can initially restore outside that range. This guard runs as
+/// part of layout, corrects only unsupported widths, and keeps native divider
+/// resizing available within the supported range.
+private struct SidebarSplitWidthGuard: NSViewRepresentable {
+    let minimum: CGFloat
+    let ideal: CGFloat
+    let maximum: CGFloat
+    let visibility: String
+
+    func makeNSView(context: Context) -> SidebarSplitWidthGuardView {
+        SidebarSplitWidthGuardView(minimum: minimum, ideal: ideal, maximum: maximum, visibility: visibility)
+    }
+
+    func updateNSView(_ view: SidebarSplitWidthGuardView, context: Context) {
+        view.minimum = minimum
+        view.ideal = ideal
+        view.maximum = maximum
+        view.visibility = visibility
+        view.enforceSupportedWidth(callback: "updateNSView")
+    }
+}
+
+private final class SidebarSplitWidthGuardView: NSView {
+    var minimum: CGFloat
+    var ideal: CGFloat
+    var maximum: CGFloat
+    var visibility: String
+    private var applyingWidth = false
+    private var hasObservedInitialWidth = false
+    private var layoutPass = 0
+    private var reportedMissingSplitView = false
+    private weak var constrainedSidebar: NSView?
+    private var minimumWidthConstraint: NSLayoutConstraint?
+
+    init(minimum: CGFloat, ideal: CGFloat, maximum: CGFloat, visibility: String) {
+        self.minimum = minimum
+        self.ideal = ideal
+        self.maximum = maximum
+        self.visibility = visibility
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        diagnostic("viewDidMoveToWindow windowFrame=\(String(describing: window?.frame)) windowIdentifier=\(String(describing: window?.identifier)) visibility=\(visibility)")
+        enforceSupportedWidth(callback: "viewDidMoveToWindow")
+    }
+
+    override func layout() {
+        super.layout()
+        layoutPass += 1
+        enforceSupportedWidth(callback: "layout#\(layoutPass)")
+    }
+
+    func enforceSupportedWidth(callback: String) {
+        guard !applyingWidth else { return }
+        guard let (splitView, columnIndex) = enclosingSplitView(), splitView.subviews.count >= 2 else {
+            if !reportedMissingSplitView {
+                diagnostic("\(callback) intended NSSplitView not found guardFrame=\(frame) windowFrame=\(String(describing: window?.frame)) visibility=\(visibility)")
+                reportedMissingSplitView = true
+            }
+            return
+        }
+        reportedMissingSplitView = false
+        let sidebar = splitView.subviews[columnIndex]
+        let width = sidebar.frame.width
+        guard width > 0 else { return }
+        installMinimumWidthConstraint(on: sidebar)
+        let companion = companionPane(in: splitView, excluding: columnIndex)
+        // NavigationSplitView's SwiftUI column-width preference does not set
+        // the contained views' compression resistance during live resize.
+        // Keep the native divider/resizing behavior, but let the detail pane
+        // yield before the sidebar within the supported range. A
+        // NavigationSplitView owns its NSSplitViewController, so attempting to
+        // mutate NSSplitView holding priorities would raise an AppKit
+        // exception; view priorities are the supported non-invasive boundary.
+        if let companion, let companionIndex = splitView.subviews.firstIndex(of: companion) {
+            let sidebarPriority = NSLayoutConstraint.Priority(rawValue: 760)
+            let detailPriority = NSLayoutConstraint.Priority(rawValue: 240)
+            sidebar.setContentCompressionResistancePriority(sidebarPriority, for: .horizontal)
+            sidebar.setContentHuggingPriority(sidebarPriority, for: .horizontal)
+            companion.setContentCompressionResistancePriority(detailPriority, for: .horizontal)
+            companion.setContentHuggingPriority(detailPriority, for: .horizontal)
+            diagnostic("configured compression sidebarIndex=\(columnIndex) detailIndex=\(companionIndex) priorities=\(sidebarPriority.rawValue)/\(detailPriority.rawValue)")
+        }
+        let geometryInvalid = companion.map { sidebar.frame.intersects($0.frame) } ?? false
+        let requested: CGFloat?
+        // SwiftUI/AppKit can restore a legacy split position below the ideal
+        // width (for example, 268 pt) without violating the declared minimum.
+        // Promote that first restored position to the intended launch width;
+        // subsequent valid divider positions are left alone so the user can
+        // resize the sidebar normally during the session.
+        if geometryInvalid || (!hasObservedInitialWidth && width < ideal) {
+            requested = ideal
+        } else if width < minimum {
+            requested = minimum
+        } else if width > maximum {
+            requested = maximum
+        } else {
+            requested = nil
+        }
+        hasObservedInitialWidth = true
+        diagnostic("\(callback) splitFrame=\(splitView.frame) autosave=\(String(describing: splitView.autosaveName)) identifier=\(String(describing: splitView.identifier)) visibility=\(visibility) sidebarIndex=\(columnIndex) sidebarFrame=\(sidebar.frame) companionFrame=\(String(describing: companion?.frame)) limits=\(minimum)/\(ideal)/\(maximum) requested=\(String(describing: requested)) children=\(childFrames(splitView))")
+        guard let requested else { return }
+        applyingWidth = true
+        if sidebar.frame.minX <= splitView.bounds.midX {
+            splitView.setPosition(requested, ofDividerAt: 0)
+        } else {
+            splitView.setPosition(splitView.bounds.width - requested - splitView.dividerThickness, ofDividerAt: 0)
+        }
+        applyingWidth = false
+        diagnostic("\(callback) repairAfter splitFrame=\(splitView.frame) sidebarFrame=\(sidebar.frame) companionFrame=\(String(describing: companion?.frame)) children=\(childFrames(splitView))")
+    }
+
+    private func companionPane(in splitView: NSSplitView, excluding columnIndex: Int) -> NSView? {
+        splitView.subviews.enumerated().filter { index, view in
+            index != columnIndex
+                && view.frame.width > max(20, splitView.dividerThickness * 2)
+                && view.frame.height > 0
+        }.map(\.element).max { $0.frame.width < $1.frame.width }
+    }
+
+    private func installMinimumWidthConstraint(on sidebar: NSView) {
+        if constrainedSidebar !== sidebar {
+            minimumWidthConstraint?.isActive = false
+            let constraint = sidebar.widthAnchor.constraint(greaterThanOrEqualToConstant: minimum)
+            constraint.priority = .required
+            constraint.isActive = true
+            constrainedSidebar = sidebar
+            minimumWidthConstraint = constraint
+            diagnostic("installed sidebar minimum width constraint=\(minimum)")
+        } else if let constraint = minimumWidthConstraint, constraint.constant != minimum {
+            constraint.constant = minimum
+        }
+    }
+
+    private func childFrames(_ splitView: NSSplitView) -> String {
+        splitView.subviews.enumerated().map { "\($0.offset):\(type(of: $0.element))=\($0.element.frame)" }.joined(separator: ";")
+    }
+
+    private func diagnostic(_ message: String) {
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["DFUUTILITY_SIDEBAR_DIAGNOSTICS"] == "1" else { return }
+        FileHandle.standardError.write(Data("SidebarLayoutDiagnostic \(message)\n".utf8))
+        #endif
+    }
+
+    private func enclosingSplitView() -> (NSSplitView, Int)? {
+        var candidate = superview
+        while let view = candidate {
+            if let splitView = view as? NSSplitView, splitView.isVertical,
+               let columnIndex = splitView.subviews.firstIndex(where: { isDescendant(of: $0) }) {
+                return (splitView, columnIndex)
+            }
+            candidate = view.superview
+        }
+        return nil
+    }
+}
+
 private extension ImageState { var isPartial: Bool { if case .partial = self { true } else { false } } }
 
 struct VersionPicker: View {
@@ -629,6 +816,8 @@ struct VersionPicker: View {
                 } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(model.catalogueState == .loading)
             }
             if case .loading = model.catalogueState { ProgressView("Checking Apple…") }
+            Text("Compatible images currently listed in Apple's restore catalogue are shown. Catalogue presence and download availability do not guarantee that Apple will authorize a downgrade.")
+                .font(.caption).foregroundStyle(.secondary)
             if choices.isEmpty, model.catalogueState != .loading { ContentUnavailableView("No compatible Apple restore images are currently available", systemImage: "externaldrive.badge.questionmark") }
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -643,6 +832,7 @@ struct VersionPicker: View {
                                     if let products = choice.release.conciseSupportedProducts {
                                         Text("Compatible products: \(products)").font(.caption).foregroundStyle(.secondary).help(choice.release.supportedDevices.sorted().joined(separator: ", "))
                                     }
+                                    Text(choice.cataloguePresentation).font(.caption).foregroundStyle(.secondary)
                                     HStack { cacheLabel(choice.cacheState); Text("· \(choice.compatibility.label)").foregroundStyle(.secondary) }.font(.caption)
                                 }
                                 Spacer()

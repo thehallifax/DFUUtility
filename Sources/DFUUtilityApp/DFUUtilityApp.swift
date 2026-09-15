@@ -50,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--handoff-termination-smoke-success") || CommandLine.arguments.contains("--handoff-termination-smoke-failure") {
             Task { @MainActor in await self.runHandoffTerminationSmoke() }
         }
+        if CommandLine.arguments.contains("--sidebar-layout-resize-smoke") {
+            Task { @MainActor in await self.runSidebarLayoutResizeSmoke() }
+        }
 #endif
         if CommandLine.arguments.contains("--demo"),
            let index = CommandLine.arguments.firstIndex(of: "--capture-screenshot"),
@@ -89,6 +92,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             AppLifecycleTrace.write("synthetic handoff setup failed: \(error.localizedDescription)")
         }
+    }
+#endif
+
+#if DEBUG
+    /// Exercises the real AppKit split view through representative window
+    /// resizes. This is intentionally a test-only command-line path: normal
+    /// launches never resize the window or alter the user's divider position.
+    @MainActor private func runSidebarLayoutResizeSmoke() async {
+        guard let window = await waitForApplicationWindow() else {
+            AppLifecycleTrace.write("sidebar resize smoke could not find application window")
+            exit(1)
+        }
+        smokeWindow = window
+        window.makeKeyAndOrderFront(nil)
+        // Establish the same large launch geometry used by the acceptance
+        // scenario before exercising live resize down to normal/minimum.
+        window.setContentSize(NSSize(width: 1240, height: 860))
+        await settleSidebarLayout(window)
+        emitSidebarResizeSmoke(phase: "launch-large", window: window)
+        let sizes: [(String, CGFloat, CGFloat)] = [
+            ("normal", 1040, 800),
+            ("minimum", 760, 500)
+        ]
+        for (phase, width, height) in sizes {
+            window.setContentSize(NSSize(width: width, height: height))
+            await settleSidebarLayout(window)
+            emitSidebarResizeSmoke(phase: phase, window: window)
+        }
+        if let split = sidebarSplitView(in: window), split.subviews.count >= 2 {
+            // Simulate a technician dragging the native divider to a valid
+            // position. The production guard must leave this width alone
+            // during subsequent window resizes.
+            split.setPosition(320, ofDividerAt: 0)
+            await settleSidebarLayout(window)
+            emitSidebarResizeSmoke(phase: "manual", window: window)
+        }
+        window.setContentSize(NSSize(width: 1240, height: 860))
+        await settleSidebarLayout(window)
+        emitSidebarResizeSmoke(phase: "large-again", window: window)
+        AppLifecycleTrace.write("sidebar resize smoke complete")
+        NSApp.terminate(nil)
+    }
+
+    @MainActor private func waitForApplicationWindow() async -> NSWindow? {
+        for _ in 0..<200 {
+            if let window = NSApp.windows.first(where: { $0.contentView != nil && !$0.className.contains("Panel") }) {
+                return window
+            }
+            await Task.yield()
+        }
+        return nil
+    }
+
+    @MainActor private func settleSidebarLayout(_ window: NSWindow) async {
+        for _ in 0..<12 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            await Task.yield()
+        }
+        window.contentView?.layoutSubtreeIfNeeded()
+    }
+
+    @MainActor private func emitSidebarResizeSmoke(phase: String, window: NSWindow) {
+        guard let split = sidebarSplitView(in: window), split.subviews.count >= 2,
+              let sidebar = split.subviews.filter({ $0.frame.minX <= 1 && $0.frame.width > 100 }).max(by: { $0.frame.width < $1.frame.width }),
+              let width = sidebarWidth(sidebar, in: split) else {
+            AppLifecycleTrace.write("SidebarResizeSmoke phase=\(phase) window=\(Int(window.contentView?.bounds.width ?? 0))x\(Int(window.contentView?.bounds.height ?? 0)) sidebar=unavailable")
+            return
+        }
+        AppLifecycleTrace.write("SidebarResizeSmoke phase=\(phase) window=\(Int(window.contentView?.bounds.width ?? 0))x\(Int(window.contentView?.bounds.height ?? 0)) sidebar=\(width) limits=260/280/340")
+    }
+
+    private func sidebarSplitView(in window: NSWindow) -> NSSplitView? {
+        guard let root = window.contentView else { return nil }
+        return sidebarSplitView(in: root)
+    }
+
+    private func sidebarSplitView(in view: NSView) -> NSSplitView? {
+        if let split = view as? NSSplitView,
+           split.isVertical,
+           split.subviews.count >= 2,
+           split.autosaveName?.contains("SidebarNavigationSplitView") == true {
+            return split
+        }
+        for child in view.subviews {
+            if let split = sidebarSplitView(in: child) { return split }
+        }
+        return nil
+    }
+
+    private func sidebarWidth(_ view: NSView, in split: NSSplitView) -> CGFloat? {
+        guard view.frame.height > 0, view.frame.width > 0 else { return nil }
+        return view.frame.width
     }
 #endif
 

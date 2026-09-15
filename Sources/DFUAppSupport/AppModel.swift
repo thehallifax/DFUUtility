@@ -192,6 +192,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var imageState: ImageState = .none
     @Published public private(set) var downloadState: AppDownloadState = .idle
     @Published public private(set) var restoreState: AppRestoreState = .idle
+    @Published public private(set) var operationSessionID: DeviceSessionID?
     @Published public private(set) var doctorReport: DoctorReport?
     @Published public var presentedError: String?
     @Published public private(set) var lastLogURL: URL?
@@ -262,7 +263,7 @@ public final class AppModel: ObservableObject {
         return targetDevices.first { $0.ecid == selectedTargetECID }
     }
     public var targetWorkflowState: TargetWorkflowState {
-        switch restoreState {
+        switch operationPresentationState(for: detailedSession) {
         case .running(let operation, _, _, _, _): if operation == "Enter DFU" { return .transitioning }; return operation == "Restore" ? .restoring : .reviving
         case .reconnecting: return .reconnecting
         case .completed: break
@@ -379,6 +380,11 @@ public final class AppModel: ObservableObject {
     public var updateBlockedMessage: String { "Finish the current DFUUtility operation before updating." }
     private var updateLaunchInProgress: Bool { if case .preparing = updateCoordinator.state { true } else { false } }
     public var reconnectInProgress: Bool { if case .reconnecting = restoreState { true } else { false } }
+    public func operationPresentationState(for session: DeviceSession?) -> AppRestoreState {
+        if session == nil, isScreenshotPresentation { return restoreState }
+        guard let session, session.id == operationSessionID else { return .idle }
+        return restoreState
+    }
     public var canEnterDFU: Bool { !isDemoMode && !isUpdateTestMode && targetDevices.count == 1 && target?.family == .mac && target?.state == .normal && !hasSyntheticProductionIdentity && doctorReport?.status.host.macVDMToolPath != nil && (!requiresPrivilegedHelperSetup || privilegedHelperState.isReady) && !operationInProgress }
     public var macDFUMultiTargetUnavailable: Bool { targetDevices.count > 1 && targetDevices.contains { $0.family == .mac && $0.state == .normal } }
     public var canUseMobileDFUAssistant: Bool {
@@ -450,6 +456,10 @@ public final class AppModel: ObservableObject {
         }
         if let screenshotScenario { configureScreenshot(screenshotScenario); return }
         if isDemoMode { deviceSessions.configureDemo(); await refreshCatalogue(); return }
+        // Load validated managed firmware before discovering sessions so a
+        // historical exact-product cache entry can be preferred without first
+        // assigning an uncached current-catalogue release.
+        await loadManagedCache(knownReleases: [])
         await refreshDiagnosticsAndTarget()
         if catalogueState == .idle { await refreshCatalogue() }
         await refreshManagedCache()
@@ -573,6 +583,9 @@ public final class AppModel: ObservableObject {
         }
         selectedTargetECID = targetDevices.count == 1 ? targetDevices[0].ecid : nil
         if scenario != "multiple-devices" && !isDeviceCaptureScenario { deviceSessions.reconcile(targetDevices) }
+        if scenario == "restore-progress" || scenario == "progress" || scenario == "completed-restore" || scenario == "completed" {
+            operationSessionID = detailedSession?.id
+        }
         if isDeviceCaptureScenario {
             for (index, session) in deviceSessions.sessions.prefix(3).enumerated() {
                 if index == 0 {
@@ -663,7 +676,7 @@ public final class AppModel: ObservableObject {
             if targetDevices.count == 1 { selectedTargetECID = targetDevices[0].ecid }
             else if !targetDevices.contains(where: { $0.ecid == selectedTargetECID }) { selectedTargetECID = nil }
             refreshImageChoices()
-            await autoAssignCachedFirmware(to: newSessionIDs)
+            await autoSelectCompatibleFirmware(to: newSessionIDs)
             return discovered
         } catch {
             if showFailure && revision == discoveryRevision { presentedError = "Target discovery failed.\n\(error.localizedDescription)" }
@@ -766,6 +779,23 @@ public final class AppModel: ObservableObject {
         refreshImageChoices()
         deviceSessions.applySharedFirmware(release: release, url: imageURL, to: [id])
     }
+    public func canDownloadFirmware(for id: DeviceSessionID) -> Bool {
+        guard downloadTask == nil, !updateLaunchInProgress,
+              let session = deviceSessions.sessions.first(where: { $0.id == id }),
+              let release = session.selectedRelease,
+              session.firmwareState != .validated,
+              let product = session.device.restoreProductType else { return false }
+        return release.supportedDevices.contains(product)
+    }
+    public func beginFirmwareDownload(for id: DeviceSessionID) {
+        guard canDownloadFirmware(for: id),
+              let release = deviceSessions.sessions.first(where: { $0.id == id })?.selectedRelease else { return }
+        selectedRelease = release
+        manualImageURL = nil
+        refreshSelectedCacheState()
+        refreshImageChoices()
+        beginDownload()
+    }
     public func useLatestCompatibleFirmwareForSelectedSessions() async {
         let selectedSessions = deviceSessions.selectedSessions
         var assignments: [(release: IPSWRelease, url: URL?)] = []
@@ -810,21 +840,38 @@ public final class AppModel: ObservableObject {
         return .resolved(release: release, cachedURL: url)
     }
 
-    private func autoAssignCachedFirmware(to sessionIDs: Set<DeviceSessionID>) async {
+    private func autoSelectCompatibleFirmware(to sessionIDs: Set<DeviceSessionID>) async {
         for id in sessionIDs {
             guard let session = deviceSessions.sessions.first(where: { $0.id == id }),
                   session.device.family == .iPhone || session.device.family == .iPad,
                   session.selectedRelease == nil, session.selectedImageURL == nil,
                   session.firmwareState == .unselected else { continue }
-            guard case .resolved(let release, let cachedURL) = try? await latestCompatibleFirmware(for: session.device),
-                  let cachedURL else { continue }
+            guard case .resolved(let release, let cachedURL) = try? await preferredFirmwareForNewSession(session.device) else { continue }
             // Recheck after the asynchronous catalogue lookup so a user choice
             // made while it was in flight is never overwritten.
             guard let current = deviceSessions.sessions.first(where: { $0.id == id }),
                   current.selectedRelease == nil, current.selectedImageURL == nil,
                   current.firmwareState == .unselected else { continue }
-            deviceSessions.setFirmware(for: id, release: release, url: cachedURL, validation: .validated)
+            deviceSessions.setFirmware(for: id, release: release, url: cachedURL, validation: cachedURL == nil ? .selected : .validated)
         }
+    }
+
+    private func preferredFirmwareForNewSession(_ device: DFUDevice) async throws -> LatestCompatibleFirmwareResolution {
+        guard let product = device.restoreProductType else { return .unavailable }
+        let cached = AppleIPSWService.sortNewestFirst(validatedCacheEntries.values.compactMap { entry in
+            let release = entry.release
+            guard release.platform == device.family.restorePlatform,
+                  !release.supportedDevices.isEmpty,
+                  release.supportedDevices.contains(product) else { return nil }
+            return release
+        })
+        if let newest = cached.first {
+            let variants = cached.filter { $0.version == newest.version && $0.build == newest.build }
+            guard Set(variants.map(FirmwareReleaseKey.init)).count == 1,
+                  let entry = validatedCacheEntries[FirmwareReleaseKey(variants[0])] else { return .ambiguous }
+            return .resolved(release: variants[0], cachedURL: entry.url)
+        }
+        return try await latestCompatibleFirmware(for: device)
     }
     public func startBatchRestore() {
         startBatch(.restore)
@@ -931,8 +978,24 @@ public final class AppModel: ObservableObject {
 
     public func refreshManagedCache() async {
         await loadManagedCache(knownReleases: catalogueReleases)
+        reconcileSelectedSessionFirmwareWithCache()
         rebuildAvailableReleases()
         refreshImageChoices()
+    }
+
+    private func reconcileSelectedSessionFirmwareWithCache() {
+        let managedRoot = cache.directory.standardizedFileURL.path + "/"
+        for session in deviceSessions.sessions {
+            guard let release = session.selectedRelease,
+                  let product = session.device.restoreProductType,
+                  release.supportedDevices.contains(product) else { continue }
+            if let entry = validatedCacheEntries[FirmwareReleaseKey(release)] {
+                deviceSessions.setFirmware(for: session.id, release: release, url: entry.url, validation: .validated)
+            } else if let selectedURL = session.selectedImageURL,
+                      selectedURL.standardizedFileURL.path.hasPrefix(managedRoot) {
+                deviceSessions.setFirmware(for: session.id, release: release, url: nil, validation: .selected)
+            }
+        }
     }
 
     public func cacheRemovalDisabledReason(for entry: ManagedIPSWEntry) -> String? {
@@ -987,12 +1050,14 @@ public final class AppModel: ObservableObject {
     private func refreshImageChoices() {
         let visible = availableReleases
         let recommendedKey = catalogueReleases.first.map(FirmwareReleaseKey.init)
+        let currentlyListedKeys = Set(catalogueReleases.map(FirmwareReleaseKey.init))
         imageChoices = visible.map { release in
             let compatibility: IPSWCompatibility
             if release.supportedDevices.isEmpty { compatibility = release.platform == .macOS ? .universalAppleSilicon : .uncertain }
             else if let model = target?.restoreProductType, release.supportedDevices.contains(model) { compatibility = .compatible(model: model) }
             else { compatibility = .uncertain }
-            return IPSWChoice(release: release, isRecommended: FirmwareReleaseKey(release) == recommendedKey, cacheState: cacheState(for: release), compatibility: compatibility)
+            let key = FirmwareReleaseKey(release)
+            return IPSWChoice(release: release, isRecommended: key == recommendedKey, isCurrentlyListed: currentlyListedKeys.contains(key), cacheState: cacheState(for: release), compatibility: compatibility)
         }
     }
 
@@ -1052,6 +1117,7 @@ public final class AppModel: ObservableObject {
             if generation == operationGeneration, Task.isCancelled { cancelMacDFUVerification() }
         }
         let originalECID = target?.ecid
+        operationSessionID = detailedSession?.id
         presentedError = nil
         let log = try? operationLogger.start(operation: "Enter DFU", target: target, release: nil)
         lastLogURL = log
@@ -1156,6 +1222,7 @@ public final class AppModel: ObservableObject {
         operationGeneration &+= 1
         let generation = operationGeneration
         let operationTarget = target
+        operationSessionID = detailedSession?.id
         let log = try? operationLogger.start(operation: action.operationName, target: target, release: detailedSession?.selectedRelease)
         lastLogURL = log
         restoreState = .running(operation: action.operationName, stage: "Preparing", stageIndex: nil, stageTotal: nil, fraction: nil)
@@ -1187,7 +1254,13 @@ public final class AppModel: ObservableObject {
         guard generation == operationGeneration, !Task.isCancelled else { return }
         switch result {
         case .restarted(let device):
-            targetDevices = [Self.mergingRediscovered(device, with: originalTarget)]
+            let merged = Self.mergingRediscovered(device, with: originalTarget)
+            if let index = targetDevices.firstIndex(where: { Self.sameStableDevice($0, merged) }) {
+                targetDevices[index] = merged
+            } else {
+                targetDevices.append(merged)
+            }
+            deviceSessions.reconcile(targetDevices)
             selectedTargetECID = device.ecid
             restoreState = .completed("\(operation) completed successfully. Target restarted.")
             if let log { try? operationLogger.append("Reconnect verified\nOperation context cleared", to: log) }
@@ -1207,7 +1280,8 @@ public final class AppModel: ObservableObject {
             ecid: device.ecid,
             productType: device.productType ?? original.productType,
             modelIdentifier: device.modelIdentifier ?? original.modelIdentifier,
-            serialNumber: device.serialNumber ?? original.serialNumber
+            serialNumber: device.serialNumber ?? original.serialNumber,
+            isSupervised: device.isSupervised ?? original.isSupervised
         )
     }
 

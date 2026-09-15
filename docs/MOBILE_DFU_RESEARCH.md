@@ -18,6 +18,12 @@ On this specific test device, direct USB-C to Lightning repeatedly produced Reco
 
 Hardware acceptance passed for Normal and Recovery detection, guided same-ECID DFU, Apple iOS image discovery, GUI download, IPSW validation, GUI Restore, live restore progress, and restart verification. Sanitized real observations are retained under `Tests/Fixtures/`; no real ECID, serial number, UDID, device name, or personal path is included.
 
+## iPhone15,4 Recovery Restore acceptance — 2026-09-15
+
+An iPhone15,4 in Recovery completed the targeted Restore workflow with iOS 27.0 / 24A437. Exact ECID targeting, firmware download and validation, Recovery Restore readiness, and Restore execution all passed on the same device. The sanitized acceptance record is `Tests/Fixtures/iphone15,4-recovery-restore-success.txt`.
+
+This result covers the current 27.0 / 24A437 image only. It does not establish Restore acceptance for historical firmware or for other iPhone product types.
+
 ## iPad7,11 guided-DFU hardware acceptance — 2026-08-23
 
 `iPad7,11` maps to the Wi-Fi iPad (7th generation), model A2197. The product-type mapping is the authoritative profile key; the marketing name alone is not used for selection. Apple identifies the seventh-generation Wi-Fi hardware as A2197 and documents this generation with a Home/Touch ID button, a Top button, and a Lightning connector:

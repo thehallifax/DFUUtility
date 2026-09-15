@@ -97,5 +97,19 @@
     },
     "scopeNote": "A replacement physical iPad12,1 connected in Recovery received the exact validated managed-cache firmware assignment without invoking Use Latest Compatible Firmware, immediately became Ready to restore, and remained unselected until the user explicitly selected it. No automatic download or Restore occurred."
   },
+  "currentIPhoneHardware": {
+    "displayName": "iPhone 15",
+    "productType": "iPhone15,4",
+    "observationDate": "2026-09-15",
+    "restoreImage": "iOS 27.0 / 24A437",
+    "results": {
+      "ecidTargeting": "PASS",
+      "downloadedValidatedFirmware": "PASS",
+      "recoveryRestoreReadiness": "PASS",
+      "guiRestore": "PASS",
+      "historicalFirmwareRestore": "PENDING"
+    },
+    "scopeNote": "Recovery Restore with exact ECID targeting passed after iOS 27.0 / 24A437 was downloaded and validated. This result does not establish historical firmware Restore acceptance."
+  },
   "scopeNote": "Mac14,2, Mac17,6, and iPhone7,2 are accepted end-to-end. iPad7,11 has passed Normal and Recovery detection, guided same-ECID DFU, firmware discovery, GUI download, validation, and Recovery-mode GUI Restore; live progress, restart verification, and full end-to-end acceptance remain pending. Two simultaneously connected iPad12,1 Recovery targets passed sequential Restore, and replacement-iPad exact cached firmware auto-assignment passed while preserving explicit operation selection. Broader Apple Silicon, Intel T2, iPhone, and iPad coverage remains pending."
 }

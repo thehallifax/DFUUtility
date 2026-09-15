@@ -1,0 +1,11 @@
+# Sanitized record of the accepted iPhone15,4 Recovery Restore.
+# Identifiers are synthetic; no real ECID, serial number, or UDID is retained.
+Target product: iPhone15,4
+Target ECID: 0x1234567890ABCDEF
+State before Restore: Recovery
+Firmware: iOS 27.0 / 24A437
+ECID targeting: PASS
+Firmware downloaded and validated: PASS
+Recovery Restore readiness: PASS
+Restore executed: PASS
+Historical firmware Restore: Not tested

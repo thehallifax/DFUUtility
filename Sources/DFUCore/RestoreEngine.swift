@@ -25,6 +25,25 @@ public enum RestoreTargetStatePolicy {
     }
 }
 
+public enum RestartTargetStatePolicy {
+    public static func failureMessage(for target: DFUDevice) -> String? {
+        guard target.family == .iPhone || target.family == .iPad else { return nil }
+        guard target.state == .normal else {
+            return "Restart through Apple Configurator is unavailable while the \(target.family.displayName) is in Recovery or DFU mode."
+        }
+        guard target.isSupervised == true else {
+            return "Restart through Apple Configurator requires a supervised \(target.family.displayName) in Normal mode."
+        }
+        return nil
+    }
+
+    public static func validate(_ target: DFUDevice) throws {
+        guard failureMessage(for: target) == nil else {
+            throw DFUError.invalidTargetState(operation: "Restart", target: target.family.displayName, allowedStates: ["supervised Normal"])
+        }
+    }
+}
+
 public enum RestoreEvent: Sendable, Equatable {
     case preparing
     case waitingForDevice
@@ -182,7 +201,8 @@ public struct RestoreEngine: Sendable {
         case .revive, .targetedRevive:
             let valid = target.family == .mac ? (target.state == .dfu || target.state == .recovery) : target.state == .recovery
             guard valid else { throw DFUError.targetNotInDFU }
-        case .reboot, .targetedReboot: break
+        case .reboot, .targetedReboot:
+            try RestartTargetStatePolicy.validate(target)
         }
         var arguments = ["--progress", "--verbose", "--timeout", "30"]
         if let ecid = target.ecid, !ecid.isEmpty { arguments += ["--ecid", ecid] }

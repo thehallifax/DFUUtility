@@ -221,9 +221,12 @@ See [Dedicated DFU host setup](docs/DEDICATED_DFU_HOST.md) for cable, model-spec
 | MacBook Air M2 | `Mac14,2` | Normal/DFU: PASS | GUI same-ECID DFU: PASS | Restore and Revive: PASS |
 | Newer Apple Silicon MacBook | `Mac17,6` | Normal/DFU: PASS | Automatic DFU: PASS; tested port-change caveat | Restore, progress, and restart: PASS |
 | iPhone 6 | `iPhone7,2` | Normal/Recovery/DFU: PASS | Same-ECID DFU: PASS | End-to-end Restore: PASS |
+| iPhone 15 | `iPhone15,4` | Recovery: PASS | — | iOS 27.0 / 24A437 Restore: PASS |
 | iPad (7th generation) Wi-Fi | `iPad7,11` | Normal/Recovery/DFU: PASS | Same-ECID DFU: PASS | Recovery-mode Restore: PASS; progress/restart verification pending |
 
 For `iPad7,11`, compatible iPadOS discovery, GUI download, IPSW validation, and Recovery-mode GUI Restore passed on real hardware. Live Restore progress, restart verification, and full end-to-end acceptance remain pending. The authoritative, deliberately scoped record is [Config/HardwareAcceptance.json](Config/HardwareAcceptance.json).
+
+An `iPhone15,4` Recovery Restore using iOS 27.0 / 24A437 also passed exact-ECID targeting, firmware download/validation, Restore readiness, and Restore execution. Historical firmware acceptance remains untested.
 
 Two simultaneously connected `iPad12,1` Recovery targets also passed the explicitly selected, ECID-targeted sequential Restore workflow. A subsequently connected replacement `iPad12,1` automatically received the exact validated cached iPadOS 26.6.1 / 23G83 asset and became Restore-ready while remaining unselected until explicit user action.
 

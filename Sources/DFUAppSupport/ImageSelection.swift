@@ -37,8 +37,15 @@ public struct IPSWChoice: Identifiable, Equatable, Sendable {
     public var id: FirmwareReleaseKey { FirmwareReleaseKey(release) }
     public let release: IPSWRelease
     public let isRecommended: Bool
+    public let isCurrentlyListed: Bool
     public let cacheState: IPSWChoiceCacheState
     public let compatibility: IPSWCompatibility
+
+    public var cataloguePresentation: String {
+        isCurrentlyListed
+            ? "Currently listed in Apple's restore catalogue · signing status not asserted"
+            : "Not currently listed in Apple's restore catalogue · signing status not asserted"
+    }
 }
 
 public struct FirmwareReleaseKey: Hashable, Sendable {
@@ -70,6 +77,13 @@ public extension IPSWRelease {
         let products = supportedDevices.sorted()
         if products.count <= 3 { return products.joined(separator: ", ") }
         return "\(products[0]), \(products[1]) +\(products.count - 2) more"
+    }
+
+    var signingPresentation: String {
+        switch signingStatus {
+        case .appleCatalogue: "Apple restore-catalogue metadata · signing status not asserted"
+        case .unknown, .none: "Signing status unknown"
+        }
     }
 }
 
@@ -105,5 +119,5 @@ public enum ImageDownloadPresentationState: Equatable, Sendable {
 public struct MainWindowConfiguration: Equatable, Sendable {
     public let defaultWidth: Double, defaultHeight: Double, minimumWidth: Double, minimumHeight: Double, maximumWorkspaceWidth: Double
     public let sidebarMinimumWidth: Double, sidebarIdealWidth: Double, sidebarMaximumWidth: Double
-    public static let standard = Self(defaultWidth: 1040, defaultHeight: 800, minimumWidth: 760, minimumHeight: 500, maximumWorkspaceWidth: 1160, sidebarMinimumWidth: 240, sidebarIdealWidth: 260, sidebarMaximumWidth: 320)
+    public static let standard = Self(defaultWidth: 1040, defaultHeight: 800, minimumWidth: 760, minimumHeight: 500, maximumWorkspaceWidth: 1160, sidebarMinimumWidth: 260, sidebarIdealWidth: 280, sidebarMaximumWidth: 340)
 }

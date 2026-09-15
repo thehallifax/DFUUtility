@@ -35,8 +35,9 @@ public struct DFUDevice: Codable, Equatable, Sendable {
     public var productType: String?
     public var modelIdentifier: String?
     public var serialNumber: String?
+    public var isSupervised: Bool?
 
-    public init(family: AppleDeviceFamily = .mac, state: DeviceState, model: String? = nil, identifier: String? = nil, ecid: String? = nil, productType: String? = nil, modelIdentifier: String? = nil, serialNumber: String? = nil) {
+    public init(family: AppleDeviceFamily = .mac, state: DeviceState, model: String? = nil, identifier: String? = nil, ecid: String? = nil, productType: String? = nil, modelIdentifier: String? = nil, serialNumber: String? = nil, isSupervised: Bool? = nil) {
         self.family = family; self.state = state
         self.model = model
         self.identifier = identifier
@@ -44,6 +45,7 @@ public struct DFUDevice: Codable, Equatable, Sendable {
         self.productType = productType ?? model
         self.modelIdentifier = modelIdentifier ?? (family == .mac ? model : nil)
         self.serialNumber = serialNumber
+        self.isSupervised = isSupervised
     }
 
     public var restoreProductType: String? { productType ?? modelIdentifier ?? model }

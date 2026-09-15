@@ -73,7 +73,7 @@ public struct DeviceSession: Identifiable, Equatable, Sendable {
     public var restartEligibilityFailure: String? {
         guard isConnected else { return "Device is disconnected." }
         guard hasSafeBatchIdentity else { return "A stable ECID is required for a multi-device operation." }
-        return nil
+        return RestartTargetStatePolicy.failureMessage(for: device)
     }
     public var shortIdentity: String {
         guard let value = ecid ?? device.identifier ?? device.serialNumber else { return "Identity unavailable" }
@@ -312,7 +312,7 @@ public final class DeviceSessionManager: ObservableObject {
         return value.lowercased()
     }
     private static func merge(_ fresh: DFUDevice, with prior: DFUDevice) -> DFUDevice {
-        DFUDevice(family: fresh.family == .unknown ? prior.family : fresh.family, state: fresh.state, model: fresh.model ?? prior.model, identifier: fresh.identifier ?? prior.identifier, ecid: fresh.ecid ?? prior.ecid, productType: fresh.productType ?? prior.productType, modelIdentifier: fresh.modelIdentifier ?? prior.modelIdentifier, serialNumber: fresh.serialNumber ?? prior.serialNumber)
+        DFUDevice(family: fresh.family == .unknown ? prior.family : fresh.family, state: fresh.state, model: fresh.model ?? prior.model, identifier: fresh.identifier ?? prior.identifier, ecid: fresh.ecid ?? prior.ecid, productType: fresh.productType ?? prior.productType, modelIdentifier: fresh.modelIdentifier ?? prior.modelIdentifier, serialNumber: fresh.serialNumber ?? prior.serialNumber, isSupervised: fresh.isSupervised ?? prior.isSupervised)
     }
 }
 

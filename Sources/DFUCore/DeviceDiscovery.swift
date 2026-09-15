@@ -36,7 +36,7 @@ public struct ConfiguratorDeviceDiscovery: DeviceDiscovering {
             }
             var args = ["--format", "JSON", "--timeout", "1"]
             if !selector.isEmpty { args += ["--ecid", selector] }
-            args += ["get", "ECID", "deviceType", "deviceClass", "bootedState", "isRestorable", "UDID", "serialNumber", "name"]
+            args += ["get", "ECID", "deviceType", "deviceClass", "bootedState", "isRestorable", "isSupervised", "UDID", "serialNumber", "name"]
             let details = try runner.run(cfgutil, arguments: args)
             let values = Self.flattenJSON(details.stdout)
             let state = Self.state(from: values)
@@ -50,7 +50,8 @@ public struct ConfiguratorDeviceDiscovery: DeviceDiscovering {
                 ecid: Self.first(values, keys: ["ECID"]) ?? selector,
                 productType: productType,
                 modelIdentifier: productType,
-                serialNumber: Self.first(values, keys: ["serialNumber", "SerialNumber"])
+                serialNumber: Self.first(values, keys: ["serialNumber", "SerialNumber"]),
+                isSupervised: Self.bool(values, keys: ["isSupervised"])
             ))
         }
         return result
@@ -91,6 +92,15 @@ public struct ConfiguratorDeviceDiscovery: DeviceDiscovering {
     private static func first(_ values: [String: String], keys: [String]) -> String? {
         let wanted = Set(keys.map { $0.lowercased() })
         return values.first(where: { wanted.contains($0.key.lowercased()) })?.value
+    }
+
+    private static func bool(_ values: [String: String], keys: [String]) -> Bool? {
+        guard let value = first(values, keys: keys)?.lowercased() else { return nil }
+        switch value {
+        case "true", "yes", "1": return true
+        case "false", "no", "0": return false
+        default: return nil
+        }
     }
 
     private static func state(from values: [String: String]) -> DeviceState {
