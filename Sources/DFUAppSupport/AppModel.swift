@@ -243,7 +243,11 @@ public final class AppModel: ObservableObject {
         let resolvedMode = privilegeMode ?? (requiresPrivilegedHelperSetup ? PrivilegeModeSelector.select() : .community)
         let sessionManager = DeviceSessionManager()
         self.deviceSessions = sessionManager
-        self.captureSession = DeviceCaptureSession()
+        // Keep demo screenshots reproducible without changing the production
+        // capture clock used by normal launches.
+        self.captureSession = screenshotScenario == nil
+            ? DeviceCaptureSession()
+            : DeviceCaptureSession(now: { Date(timeIntervalSinceReferenceDate: 0) })
         self.batchCoordinator = BatchCoordinator(sessions: sessionManager, operatorService: DefaultBatchTargetOperator(restore: restoreEngine, discovery: discovery, reconnectAttempts: reconnectAttempts, reconnectInterval: reconnectInterval), logger: operationLogger)
         self.updateCoordinator = updateCoordinator ?? UpdateCoordinator()
         self.applicationTerminator = applicationTerminator ?? NoOpApplicationTerminator()
@@ -583,6 +587,22 @@ public final class AppModel: ObservableObject {
         }
         selectedTargetECID = targetDevices.count == 1 ? targetDevices[0].ecid : nil
         if scenario != "multiple-devices" && !isDeviceCaptureScenario { deviceSessions.reconcile(targetDevices) }
+        // Populate the connected-device demo views with the same validated
+        // firmware presentation a technician sees after preparing an image.
+        // This is fixture state only; no production discovery or assignment
+        // behavior is changed.
+        if let session = deviceSessions.sessions.first(where: { $0.isConnected }) {
+            let demoEntry: ManagedIPSWEntry? = if scenario == "normal-mac" || scenario == "mac-dfu" {
+                DemoFirmwareLibrary.cachedEntries.first { $0.release.platform == .macOS }
+            } else if scenario == "restore-progress" || scenario == "progress" || scenario == "completed-restore" || scenario == "completed" {
+                DemoFirmwareLibrary.cachedEntries.first { $0.release.platform == .iOS && $0.release.build == cachedIOS.build }
+            } else {
+                nil
+            }
+            if let demoEntry {
+                deviceSessions.setFirmware(for: session.id, release: demoEntry.release, url: demoEntry.url, validation: .validated)
+            }
+        }
         if scenario == "restore-progress" || scenario == "progress" || scenario == "completed-restore" || scenario == "completed" {
             operationSessionID = detailedSession?.id
         }

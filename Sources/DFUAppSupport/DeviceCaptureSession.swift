@@ -72,8 +72,9 @@ public enum DeviceCaptureQRCode {
 public final class DeviceCaptureSession: ObservableObject {
     @Published public private(set) var records: [DeviceCaptureRecord] = []
     @Published public var isAutomaticCaptureEnabled = false
+    private let now: @Sendable () -> Date
 
-    public init() {}
+    public init(now: @escaping @Sendable () -> Date = Date.init) { self.now = now }
 
     @discardableResult
     public func capture(_ device: DFUDevice, assetTag: String? = nil) -> DeviceCaptureRecord {
@@ -84,7 +85,7 @@ public final class DeviceCaptureSession: ObservableObject {
             records[index] = record
             return record
         }
-        let record = DeviceCaptureRecord(device: device, assetTag: assetTag)
+        let record = DeviceCaptureRecord(capturedAt: now(), device: device, assetTag: assetTag)
         records.append(record)
         return record
     }

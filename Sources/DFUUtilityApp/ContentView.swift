@@ -28,6 +28,28 @@ struct ContentView: View {
     init(model: AppModel) {
         self.model = model
         _showVersions = State(initialValue: CommandLine.arguments.contains("--show-version-chooser"))
+        // Screenshot renders are created directly in an NSHostingView, so
+        // SwiftUI's asynchronous `.task` cannot be relied on to select the
+        // intended workspace before the first bitmap is captured. Seed the
+        // presentation destination for deterministic demo images; ordinary
+        // launches retain the Restore & Revive default and normal auto-select.
+        let initialDestination: SidebarDestination = if let scenario = model.screenshotPresentationScenario {
+            switch scenario {
+            case let value where value.hasPrefix("device-capture"): .deviceCapture
+            case "diagnostics": .diagnostics
+            case "firmware-library": .firmware
+            default:
+                if let session = model.deviceSessions.sessions.first(where: { $0.isConnected }),
+                   model.deviceSessions.sessions.filter(\.isConnected).count == 1 {
+                    .device(session.id)
+                } else {
+                    .restoreRevive
+                }
+            }
+        } else {
+            .restoreRevive
+        }
+        _destination = State(initialValue: initialDestination)
     }
 
     var body: some View {

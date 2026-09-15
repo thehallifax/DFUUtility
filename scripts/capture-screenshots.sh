@@ -3,9 +3,12 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
+. "$root/scripts/screenshot-scenarios.sh"
 swift build --product DFUUtility
 
-for scenario in multiple-devices normal-mac firmware-library device-capture-default diagnostics about update mac-dfu iphone-guided-dfu ipad-guided-dfu firmware-chooser download-progress restore-progress manage-downloads completed-restore; do
+screenshot_count=0
+for scenario in $screenshot_scenarios; do
+  screenshot_count=$((screenshot_count + 1))
   destination="$root/docs/images/$scenario.png"
   rm -f "$destination"
   .build/debug/DFUUtility --demo --screenshot "$scenario" --capture-screenshot "$destination"
@@ -20,4 +23,4 @@ for scenario in multiple-devices normal-mac firmware-library device-capture-defa
   done
 done
 
-echo "Generated 16 deterministic screenshots in docs/images."
+echo "Generated $screenshot_count deterministic screenshots in docs/images."

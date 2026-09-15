@@ -1,32 +1,27 @@
 # DFUUtility
 
-DFUUtility is an open-source native macOS utility for entering supported Macs into DFU mode and restoring or reviving Apple devices with Apple IPSWs.
+DFUUtility is a free, open-source native macOS utility for technicians who
+prepare, recover, restore, and inventory supported Apple devices. It provides
+a guided interface for Mac DFU, iPhone/iPad DFU, Apple firmware, and device
+identity workflows without requiring Git, Swift, Xcode, or direct use of
+Apple's command-line tools for normal operation.
 
-## What does this actually do?
-
-DFUUtility helps you recover, restore, and manage Apple devices from a Mac without needing to know all of Apple's command-line tools.
-
-If a Mac, iPhone, or iPad needs to be restored, revived, put into DFU mode, or have its firmware reinstalled, DFUUtility gives you a graphical interface that guides you through the process.
-
-It's particularly useful for IT technicians managing Apple devices, but it's designed so you don't need to understand the commands happening underneath. It can find connected devices, download the correct Apple firmware, guide you through DFU mode, perform restores and revives, and show you what's happening as it works.
-
-Basically: plug in the Apple device, choose what you need to do, and DFUUtility handles the complicated bits.
-
-For example, if a MacBook won't boot properly, connect it to another Mac, open DFUUtility, follow the instructions to put it into DFU mode, and choose **Revive** or **Restore**. DFUUtility handles the Apple tooling and firmware workflow.
-
-![DFUUtility multi-device workflow](docs/images/multiple-devices.png)
+Connect a device with a data-capable cable, choose the workflow, and follow
+the on-screen checks. DFUUtility keeps destructive actions explicit and shows
+the stage and progress reported by Apple Configurator while it works.
 
 Community releases are ad-hoc signed. No paid Apple Developer account is
 required, but Community builds do not provide Developer ID publisher
 authentication or notarization.
 
-## Features
+## Key capabilities
 
 ### Mac
 
 - Detect Normal, Recovery, and DFU targets and preserve the target ECID across transitions.
 - Enter DFU using the bundled `macvdmtool` and standard macOS administrator authorization.
 - Restore or Revive through Apple Configurator with real stage-local progress and operation logs.
+- Verify the same target before reporting a successful DFU transition.
 
 ### iPhone and iPad
 
@@ -34,6 +29,7 @@ authentication or notarization.
 - Guide supported physical-button DFU sequences without sending device commands.
 - Require same-ECID DFU enumeration before reporting success.
 - Restore compatible validated IPSWs with destructive confirmation and live progress.
+- Perform Recovery Restore on supported iPhone and iPad targets.
 
 ### Firmware management
 
@@ -42,6 +38,12 @@ authentication or notarization.
 - Inspect storage, reveal files, resume partials, and confirm removal in **Manage Downloads…**.
 - Select a local IPSW without placing it under DFUUtility's cache management.
 - Automatically assign an exact compatible validated cached IPSW to a newly discovered iPhone or iPad without selecting the device or starting an operation.
+
+### Technician workspace
+
+- Work with multiple connected devices as independent sessions and run an explicitly selected Restore, Revive, or Restart batch sequentially.
+- Capture read-only device identifiers, add an internal asset tag, generate an exact-serial QR code, and export CSV.
+- Inspect Diagnostics and Host Readiness guidance for Apple Configurator, bundled tools, accessory authorization, and sanitized support reports.
 
 ### Safety
 
@@ -63,27 +65,53 @@ Batch execution is intentionally sequential in this first implementation. Parall
 
 ## Screenshots
 
-| Guided iPhone DFU | Guided iPad DFU |
-| --- | --- |
-| ![Guided iPhone DFU](docs/images/iphone-guided-dfu.png) | ![Guided iPad DFU](docs/images/ipad-guided-dfu.png) |
+The gallery below uses the deterministic demo mode shipped with the project.
+All identities are fictional and the views show the same navigation and safety
+gates used by the app.
 
-| Firmware chooser | Manage Downloads |
+| Restore & Revive | Device workspace |
 | --- | --- |
-| ![Compatible firmware chooser](docs/images/firmware-chooser.png) | ![Managed firmware cache](docs/images/manage-downloads.png) |
+| ![Restore and Revive workspace](docs/images/multiple-devices.png) | ![Connected Mac workspace](docs/images/normal-mac.png) |
 
-| Download progress | Restore progress |
+| Firmware Library | Device Capture |
 | --- | --- |
-| ![Firmware download progress](docs/images/download-progress.png) | ![Structured Restore progress](docs/images/restore-progress.png) |
+| ![Firmware Library](docs/images/firmware-library.png) | ![Device Capture and identifiers](docs/images/device-capture-default.png) |
 
-| Completed Restore |
-| --- |
-| ![Completed Restore and returned target](docs/images/completed-restore.png) |
+| Diagnostics / Host Readiness | Guided mobile DFU |
+| --- | --- |
+| ![Diagnostics and Host Readiness](docs/images/diagnostics.png) | ![Guided iPhone DFU](docs/images/iphone-guided-dfu.png) |
+
+| Guided iPad DFU | Firmware chooser |
+| --- | --- |
+| ![Guided iPad DFU](docs/images/ipad-guided-dfu.png) | ![Compatible firmware chooser](docs/images/firmware-chooser.png) |
+
+| Download progress | Manage Downloads |
+| --- | --- |
+| ![Firmware download progress](docs/images/download-progress.png) | ![Managed firmware cache](docs/images/manage-downloads.png) |
+
+| Restore progress | Completed Restore |
+| --- | --- |
+| ![Structured Restore progress](docs/images/restore-progress.png) | ![Completed Restore and returned target](docs/images/completed-restore.png) |
+
+| About and licensing | Source-checkout update |
+| --- | --- |
+| ![About and licensing](docs/images/about.png) | ![Source-checkout update](docs/images/update.png) |
 
 All screenshots use deterministic fictional data; they contain no real device or user identifiers.
 
-## Installation
+## Requirements
 
-Requirements: macOS 14 or newer, [Apple Configurator](https://apps.apple.com/app/apple-configurator/id1037126344), a data-capable cable, and internet access for automatic firmware downloads. The current Mac DFU workflow requires an Apple Silicon host. Administrator authorization is requested only when entering a Mac into DFU.
+- macOS 14 or newer.
+- Apple Configurator from the [Mac App Store](https://apps.apple.com/app/apple-configurator/id1037126344) for discovery, Restore, and Revive.
+- A direct, data-capable USB connection. Charging-only cables and some hubs do not provide a usable restore transport.
+- An Apple-silicon Mac host for automatic Mac DFU entry. Mac DFU port requirements are model-specific; follow Apple's guidance and the tested-hardware notes below.
+- Administrator authorization only when entering a Mac into DFU. Mobile DFU uses physical button input.
+- Internet access only when browsing or downloading firmware from Apple's catalogues.
+
+DFUUtility does not claim universal Apple hardware support. Physical acceptance
+applies only to the products and workflows listed in [HardwareAcceptance.json](Config/HardwareAcceptance.json).
+
+## Installation
 
 ### End-user installation
 
@@ -192,13 +220,43 @@ scripts/update.sh --test     # Run the repository tests before installation
 
 The flags may be combined. In-app and shell updates are intended for clean end-user clones. Contributors with local changes or feature branches should manage their Git checkout manually; the updater never stashes, resets, cleans, switches branches, or discards work.
 
-## Usage
+## Using DFUUtility
 
-1. Connect the target with a data-capable cable and select it if more than one device is attached.
-2. Choose compatible Apple firmware with **Change Version…**, or use **Choose Local IPSW…**.
-3. Download and validate the image if needed.
-4. Enter DFU: Mac entry is initiated by the app; supported iPhone/iPad entry follows the guided physical-button assistant.
-5. Choose Revive where supported, or confirm Restore.
+### Select and prepare a device
+
+Connect the target with a data-capable cable. With one device, DFUUtility
+selects it for the detail workspace; with multiple devices, select the target
+explicitly. The **Firmware Library** can also be browsed before any device is
+connected.
+
+### Choose and validate firmware
+
+For a connected target, use **Choose Firmware…** or **Change Version…** to see
+exact ProductType-compatible releases, or choose a local IPSW. Downloaded
+images are validated before they become Restore-ready. The independent
+Firmware Library can browse macOS, iOS, and iPadOS, download images, validate
+them, and open **Manage Downloads…** without changing a device's selection.
+
+### Enter DFU
+
+Mac entry is initiated by DFUUtility on an Apple-silicon host. Supported
+iPhone/iPad entry follows the guided physical-button assistant; the assistant
+does not press buttons or send an unverified device command for you.
+
+### Restore, Revive, and Recovery Restore
+
+Choose **Revive** where the current device state supports it. **Restore** is a
+separate, explicitly confirmed destructive action and requires a validated
+compatible IPSW. Supported mobile Recovery targets use the same exact-device
+Restore path and checks. Progress is stage-local and comes from Apple
+Configurator; DFUUtility does not invent an overall percentage.
+
+### Multiple devices and capture
+
+Use **Restore & Revive** to select devices and run a sequential batch. Each
+operation is explicitly targeted and remains per-device. Use **Device Capture**
+for read-only identifiers, asset tags, serial-number QR codes, and CSV export;
+capture never changes batch selection or device state.
 
 If Mac Enter DFU reports that the final VDM reply was not received, the target may already have transitioned. Wait briefly and click **Refresh**. If it remains absent, reconnect the cable. USB-C/DFU port behavior varies by model, so consult [Apple's model-specific DFU-port guidance](https://support.apple.com/en-us/108900) rather than assuming every MacBook uses the same port.
 

@@ -142,7 +142,10 @@ public struct ShellUpdateService: UpdateServicing {
 
 #if DEBUG
 public struct SimulatedUpdateService: UpdateServicing {
-    public static let availability = UpdateAvailability(currentVersion: "0.6.1", latestVersion: "0.7.0-test", currentCommit: "update-test-current", latestCommit: "update-test-latest")
+    // Synthetic source-update values keep the demo screenshot representative
+    // of the current release-era UI without contacting GitHub or changing the
+    // production updater's release discovery path.
+    public static let availability = UpdateAvailability(currentVersion: "0.11.0", latestVersion: "0.11.1", currentCommit: "update-test-current", latestCommit: "update-test-latest")
     public init() {}
     public func check(sourceRoot: URL) async throws -> AppUpdateState { .available(Self.availability) }
     public func launch(sourceRoot: URL, oldPID: Int32, appURL: URL, resultURL: URL) throws {}

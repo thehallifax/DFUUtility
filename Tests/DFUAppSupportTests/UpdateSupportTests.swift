@@ -218,7 +218,7 @@ private struct BinaryHTTPFixture: HTTPDataFetching {
     #expect(coordinator.state == .preparing); #expect(coordinator.launchSucceeded)
     coordinator.completeSimulation()
     #expect(coordinator.state == .current)
-    #expect(coordinator.pendingResult == .init(outcome: .success, oldVersion: "0.6.1", newVersion: "0.7.0-test", isSimulation: true))
+    #expect(coordinator.pendingResult == .init(outcome: .success, oldVersion: "0.11.0", newVersion: "0.11.1", isSimulation: true))
 }
 
 @Test func updateAcceptanceArgumentIsRejectedForPackagedApplication() {
