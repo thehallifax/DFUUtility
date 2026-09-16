@@ -179,9 +179,11 @@ private final class RepeatingCompletedRestore: @unchecked Sendable, RestoreOpera
 }
 private final class FailingRestore: @unchecked Sendable, RestoreOperating {
     private let lock = NSLock(); private(set) var calls = 0
+    private let output: String
+    init(output: String = "fixture failure") { self.output = output }
     func events(for action: RestoreAction) -> AsyncThrowingStream<RestoreEvent, Error> {
         lock.withLock { calls += 1 }
-        return AsyncThrowingStream { $0.finish(throwing: DFUError.commandFailed(command: "cfgutil revive", status: 1, output: "fixture failure")) }
+        return AsyncThrowingStream { $0.finish(throwing: DFUError.commandFailed(command: "cfgutil revive", status: 1, output: output)) }
     }
     var callCount: Int { lock.withLock { calls } }
 }
@@ -1262,6 +1264,21 @@ private let noOpLogger = AppMockLogger()
     app.presentedError = "fixture"; #expect(app.presentedErrorTitle == "DFUUtility")
 }
 
+@Test @MainActor func code401FailurePresentationIsConciseAndContextual() {
+    let target = DFUDevice(family: .mac, state: .dfu, identifier: "SYNTHETIC-UDID", ecid: "SYNTHETIC-ECID", productType: "MacBookAir10,1", serialNumber: "SYNTHETIC-SERIAL")
+    let release = IPSWRelease(platform: .macOS, version: "27.0", build: "26A428", downloadURL: URL(fileURLWithPath: "/synthetic/System.ipsw"))
+    let error = DFUError.commandFailed(command: "cfgutil --ecid SYNTHETIC-ECID restore --ipsw /synthetic/System.ipsw", status: 1, output: "The required framework MobileDevice is out of date. (Domain: ConfigurationUtilityKit.error Code: 401)")
+    let body = RestoreFailurePresentation.message(for: error, target: target, release: release)!
+    #expect(RestoreFailurePresentation.hostSoftwareTitle == "Host macOS Update Required")
+    #expect(body.contains("MacBookAir10,1")); #expect(body.contains("macOS 27.0 (26A428)"))
+    #expect(!body.contains("SYNTHETIC-ECID")); #expect(!body.contains("SYNTHETIC-UDID")); #expect(!body.contains("SYNTHETIC-SERIAL"))
+    #expect(!body.contains("/synthetic/System.ipsw")); #expect(!body.contains("cfgutil --ecid")); #expect(!body.contains("ConfigurationUtilityKit.error"))
+    let app = model()
+    app.presentedError = body
+    #expect(app.presentedErrorTitle == RestoreFailurePresentation.hostSoftwareTitle)
+    #expect(RestoreFailurePresentation.message(for: DFUError.commandFailed(command: "cfgutil restore", status: 1, output: "fixture failure"), target: target, release: release) == nil)
+}
+
 @Test @MainActor func restoreEnabledOnlyForRealDFUAndImage() async {
     let app = model(devices: [DFUDevice(state: .dfu, ecid: "MAC")]); await app.refreshDiagnosticsAndTarget(); let id = app.deviceSessions.sessions[0].id; app.deviceSessions.setFirmware(for: id, release: nil, url: testURL, validation: .validated); #expect(app.canRestore)
 }
@@ -1841,6 +1858,21 @@ private final class ResultSequencedDiscovery: @unchecked Sendable, DeviceDiscove
     #expect(app.presentedError?.contains("View the operation log") == true)
     await app.refreshDiagnosticsAndTarget(); #expect(app.target?.state == .recovery); #expect(app.canRevive)
     app.revive(); #expect(await waitForRestoreState(app) { _ in engine.callCount == 2 && !app.operationInProgress })
+}
+
+@Test @MainActor func code401FailureKeepsTechnicalEvidenceInOperationLogAndRemainsFailed() async {
+    let recovery = DFUDevice(state: .recovery, model: "MacBookAir10,1", ecid: "SYNTHETIC-ECID")
+    let raw = "The required framework MobileDevice is out of date. (Domain: ConfigurationUtilityKit.error Code: 401)"
+    let logger = AppMockLogger()
+    let app = AppModel(ipswService: AppMockService(), discovery: AppMockDiscovery(values: [recovery]), cache: tempCache(), validator: AppMockValidator(valid: true), diagnostics: AppMockDiagnostics(), restoreEngine: FailingRestore(output: raw), dfuController: AppMockDFU(), operationLogger: logger, requiresPrivilegedHelperSetup: false)
+
+    await app.refreshDiagnosticsAndTarget()
+    app.revive()
+    #expect(await waitForRestoreState(app) { if case .failed = $0 { true } else { false } })
+    #expect(app.presentedErrorTitle == RestoreFailurePresentation.hostSoftwareTitle)
+    #expect(app.presentedError?.contains("Update macOS, then try again.") == true)
+    #expect(app.restoreState != .completed(""))
+    #expect(logger.messages.contains { $0.contains("ConfigurationUtilityKit.error Code: 401") && $0.contains("MobileDevice") })
 }
 
 @Test @MainActor func observedVDMFailureIsConciseLoggedAndRetryableAfterRefresh() async {

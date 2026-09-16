@@ -434,6 +434,9 @@ public final class AppModel: ObservableObject {
     }
     public var presentedErrorTitle: String {
         guard let message = presentedError else { return "DFUUtility" }
+        if message.hasPrefix("Apple's restore framework on this Mac is too old for the selected restore.") {
+            return RestoreFailurePresentation.hostSoftwareTitle
+        }
         if message.hasPrefix("Restore failed") { return "Restore Failed" }
         if message.hasPrefix("Revive failed") { return "Revive Failed" }
         if message.hasPrefix("Image download failed") { return "Download Failed" }
@@ -1263,7 +1266,11 @@ public final class AppModel: ObservableObject {
                 if let log { try? operationLogger.append("FAILED: \(error.localizedDescription)\nOperation context cleared", to: log) }
                 restoreState = .failed(error.localizedDescription)
                 let logGuidance = log == nil ? "" : " View the operation log for technical details."
-                presentedError = "\(action.operationName) failed.\n\(error.localizedDescription)\n\nRefresh and verify the device is still connected. Check the selected firmware where applicable.\(logGuidance)"
+                if let hostMessage = RestoreFailurePresentation.message(for: error, target: operationTarget, release: detailedSession?.selectedRelease) {
+                    presentedError = hostMessage + (log == nil ? "" : "\n\nTechnical details were saved to the operation log. Use View Log to review them.")
+                } else {
+                    presentedError = "\(action.operationName) failed.\n\(error.localizedDescription)\n\nRefresh and verify the device is still connected. Check the selected firmware where applicable.\(logGuidance)"
+                }
             }
             if generation == operationGeneration { operationTask = nil }
         }

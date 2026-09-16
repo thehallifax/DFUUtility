@@ -626,6 +626,16 @@ private struct ThrowingRunner: CommandRunning {
     #expect(throws: MacVDMToolFailure.self) { try CommunityDFURequest(runner: ThrowingRunner(), tool: tool).enterDFU() }
 }
 
+@Test func cfgutilCode401IsClassifiedAsHostSoftwareOutOfDate() {
+    let output = "cfgutil: error: The required framework \"MobileDevice\" is out of date. Please update macOS.\n(Domain: ConfigurationUtilityKit.error Code: 401)"
+    let failure = DFUError.commandFailed(command: "cfgutil --progress restore --ipsw /fixture/System.ipsw", status: 1, output: output)
+    #expect(failure.restoreFailureKind == .hostSoftwareOutOfDate)
+    #expect(failure.localizedDescription.contains("ConfigurationUtilityKit.error Code: 401"))
+    #expect(failure.localizedDescription.contains("MobileDevice"))
+    #expect(DFUError.commandFailed(command: "cfgutil restore", status: 1, output: "ConfigurationUtilityKit.error Code: 400").restoreFailureKind == .generic)
+    #expect(DFUError.commandFailed(command: "cfgutil restore", status: 1, output: "unrelated failure").restoreFailureKind == .generic)
+}
+
 @Test func macVDMToolFailuresAreClassifiedWithoutDecodingOpaqueReply() {
     let observed = "Mac type: J414sAP\nLooking for HPM devices...\nFound: IOService:/fixture\nConnection: Source\nStatus: APP\nUnlocking... OK\nEntering DBMa mode... Status: DBMa\nRebooting target into DFU mode... VDM failed (reply: 0x05ac8092)\nExiting DBMa mode... OK\nVDM failed"
     let communication = MacVDMToolFailure.classify(status: 255, output: observed)
@@ -883,10 +893,10 @@ private final class SequencedDiscovery: @unchecked Sendable, DeviceDiscovering {
 }
 
 @Test func buildVersionAndDiagnosticsMetadataPropagate() throws {
-    #expect(BuildMetadata.displayVersion == "0.12.0 (1)")
+    #expect(BuildMetadata.displayVersion == "0.12.1 (1)")
     #expect(BuildMetadata.helperProtocolVersion == 1)
     let text = AcceptanceDiagnostics.render(report: nil, privilegeMode: .signedHelper, helperState: .upgradeRequired(installedProtocol: 0), appURL: URL(fileURLWithPath: "/missing.app"))
-    #expect(text.contains("App version: 0.12.0 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
+    #expect(text.contains("App version: 0.12.1 (1)")); #expect(text.contains("Responding — upgrade required")); #expect(text.contains("Required helper protocol: 1"))
     #expect(text.contains("Helper registration signing: Unsupported"))
 }
 
@@ -965,7 +975,7 @@ private func releaseLibrary(_ command: String) throws -> (Int32, String) {
 
 @Test func releaseCheckParsesVersionAndRejectsMalformedMetadata() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.12.0")
+    #expect(try releaseLibrary("validate_version_metadata \"\(root.appendingPathComponent("Config/Version.env").path)\"; metadata_value \"\(root.appendingPathComponent("Config/Version.env").path)\" MARKETING_VERSION").1 == "0.12.1")
     let malformed = try temporaryDirectory().appendingPathComponent("Version.env"); try Data("MARKETING_VERSION=bad!\n".utf8).write(to: malformed)
     #expect(try releaseLibrary("validate_version_metadata \"\(malformed.path)\"").0 != 0)
     #expect(try releaseLibrary("metadata_value /definitely/missing MARKETING_VERSION").0 != 0)

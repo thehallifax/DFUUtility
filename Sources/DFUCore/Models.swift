@@ -94,6 +94,23 @@ public enum DFUError: LocalizedError, Equatable {
     case commandFailed(command: String, status: Int32, output: String)
     case privilegeRequired(String)
 
+    public enum RestoreFailureKind: Equatable, Sendable {
+        case hostSoftwareOutOfDate
+        case generic
+    }
+
+    /// Identifies only the stable Apple host-framework failure we can explain
+    /// safely. The original command/status/output remain on `commandFailed`.
+    public var restoreFailureKind: RestoreFailureKind {
+        guard case .commandFailed(_, _, let output) = self else { return .generic }
+        let lower = output.lowercased()
+        let hasCode401 = lower.contains("configurationutilitykit.error") &&
+            (lower.contains("code 401") || lower.contains("code: 401"))
+        let hasFrameworkMessage = lower.contains("required framework") &&
+            lower.contains("mobiledevice") && lower.contains("out of date")
+        return hasCode401 || hasFrameworkMessage ? .hostSoftwareOutOfDate : .generic
+    }
+
     public var errorDescription: String? {
         switch self {
         case .unsupportedHost: "The host must be an Apple Silicon Mac."
